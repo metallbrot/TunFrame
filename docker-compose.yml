@@ -1,0 +1,124 @@
+services:
+  resolver:
+    container_name: resolver
+    image: ubuntu/bind9:latest
+    environment:
+      - BIND9_USER=root
+      - TZ=Europe/Berlin
+    ports:
+      - 9999:53/tcp
+      - 9999:53/udp
+    volumes:
+      - ./resolver/config:/etc/bind
+      - ./resolver/cache:/var/cache/bind
+      - ./resolver/records:/var/lib/bind
+    networks:
+      client-network:
+        ipv4_address: 172.16.0.2
+      internet:
+        ipv4_address: 10.1.1.1
+    restart: unless-stopped
+
+  dnscollector:
+    container_name: dnscollector
+    image: dmachard/dnscollector:latest
+    network_mode: service:resolver
+    user: root
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./dns-collector/config/:/etc/dnscollector/
+      - ./dns-collector/logs:/var/log/dnscollector
+    restart: unless-stopped
+
+  root-simulator:
+    container_name: root-simulator
+    image: ubuntu/bind9:latest
+    environment:
+      - BIND9_USER=root
+      - TZ=Europe/Berlin
+    volumes:
+      - ./root-simulator/config:/etc/bind
+      - ./root-simulator/cache:/var/cache/bind
+      - ./root-simulator/records:/var/lib/bind
+    networks:
+      internet:
+        ipv4_address: 10.5.5.5
+    restart: unless-stopped
+
+  tld-simulator:
+    container_name: tld-simulator
+    image: ubuntu/bind9:latest
+    environment:
+      - BIND9_USER=root
+      - TZ=Europe/Berlin
+    volumes:
+      - ./tld-simulator/config:/etc/bind
+      - ./tld-simulator/cache:/var/cache/bind
+      - ./tld-simulator/records:/var/lib/bind
+    networks:
+      internet:
+        ipv4_address: 10.10.10.10
+      server-network:
+        ipv4_address: 192.168.1.1
+    restart: unless-stopped
+
+  iodine-server:
+    container_name: iodine-server
+    build: ./iodine-server
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+    networks:
+      internet:
+        ipv4_address: 10.20.20.20
+      server-network:
+        ipv4_address: 192.168.2.2
+    restart: no
+
+  iodine-client:
+    container_name: iodine-client
+    build: ./iodine-client
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+    dns:
+      172.16.0.2
+    networks:
+      client-network:
+        ipv4_address: 172.16.0.10
+    restart: no
+
+  detector-wrapper:
+    container_name: detector-wrapper
+    image: python
+    volumes:
+     - ./dns-collector/logs:/home/detector/logs:ro
+    restart: no
+
+
+networks:
+  client-network:
+    name: client-network
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.16.0.0/16
+          gateway: 172.16.0.1
+  server-network:
+    name: server-network
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.0.0/16
+          gateway: 192.168.0.1
+  internet:
+    name: internet
+    driver: bridge
+    ipam:
+      config:
+      - subnet: 10.0.0.0/8
+        gateway: 10.0.0.1
+

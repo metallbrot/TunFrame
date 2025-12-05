@@ -1,0 +1,27 @@
+global:
+  server-identity: "dns-collector"
+  text-format: 
+  trace:
+    verbose: true
+    log-malformed: true
+
+pipelines:
+  - name: sniffer
+    afpacket-sniffer:
+      port: 53
+      device: eth0
+    transforms:
+      filtering:
+        drop-queryip-file: "/etc/dnscollector/ip_filterlist.txt"
+    routing-policy:
+      forward: ["console-output", "logfile-json"]
+
+
+  - name: "console-output"
+    stdout:
+      mode: "text"
+
+  - name: "logfile-json"
+    logfile:
+      file-path: /var/log/dnscollector/dnslogs
+      mode: json
