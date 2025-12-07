@@ -23,5 +23,5 @@ pipelines:
 
   - name: "logfile-json"
     logfile:
-      file-path: /var/log/dnscollector/dnslogs
+      file-path: /var/log/dnscollector/dnslogs.json
       mode: json

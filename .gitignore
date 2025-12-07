@@ -1,6 +1,7 @@
 # project custom
-
+dnslogs.json
 example_log.json
+**/cache/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

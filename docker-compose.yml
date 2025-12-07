@@ -77,6 +77,7 @@ services:
       server-network:
         ipv4_address: 192.168.2.2
     restart: no
+    entrypoint: ["iodined", "-f", "-c", "-P", "password123", "10.100.100.100", "tunnel.com"]
 
   iodine-client:
     container_name: iodine-client
@@ -85,18 +86,26 @@ services:
     cap_add:
       - NET_ADMIN
     dns:
-      172.16.0.2
+      - 172.16.0.2
     networks:
       client-network:
         ipv4_address: 172.16.0.10
     restart: no
+    entrypoint: ["iodine", "-f", "-r", "-L", "0", "-I", "50", "-T", "TXT", "-O", "Base32", "-P", "password123", "tunnel.com"]
+
+
 
   detector-wrapper:
     container_name: detector-wrapper
     image: python
+    working_dir: /home/detector/
+    environment:
+      - PYTHONUNBUFFERED=1
     volumes:
      - ./dns-collector/logs:/home/detector/logs:ro
+     - ./detection/:/home/detector
     restart: no
+    entrypoint: ["python3", "detector_base/readfile.py"]
 
 
 networks:
