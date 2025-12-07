@@ -3,6 +3,7 @@ import re
 from collections import Counter
 from typing import Dict, Any, List, Tuple
 import tldextract
+from datetime import datetime
 
 def safe_get(event, path, default=''):
     keys = path.split('.')
@@ -282,10 +283,15 @@ def extract_rcode(event: Dict) -> str:
     """
     return safe_get(event, 'dns.rcode', 'NOERROR')
 
+def rfc3339ns_to_int(timestamp_str: str) -> int:
+    """Convert RFC3339ns to Unix timestamp (int, sortable)"""
+    dt = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+    return int(dt.timestamp())
 
 def extract_timestamp(event: Dict) -> str:
     """
     Extract timestamp from the event.
     Used for temporal analysis and sequencing of DNS queries.
     """
-    return safe_get(event, 'dnstap.timestamp-rfc3339ns', '')
+    timestamp_str = safe_get(event, 'dnstap.timestamp-rfc3339ns', '')
+    return rfc3339ns_to_int(timestamp_str)
