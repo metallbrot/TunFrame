@@ -1,0 +1,1 @@
+LOGFILE_PATH="./home/detector/logs/dnslogs.json"
