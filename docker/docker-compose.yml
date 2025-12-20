@@ -19,6 +19,20 @@ services:
         ipv4_address: 10.1.1.1
     restart: unless-stopped
 
+  tcpreplay:
+    build: ./pcap-replayer
+    container_name: pcap-replayer
+    network_mode: service:resolver
+    volumes:
+      - ${PCAP_PATH}:/app
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    entrypoint: ["sh", "-c", "ip link add replay0 type dummy &&
+      ip link set replay0 up &&
+      echo '✓ replay0 created and ready' && tail -f /dev/null"
+      ]
+
   dnscollector:
     container_name: dnscollector
     image: dmachard/dnscollector:latest
@@ -68,12 +82,11 @@ services:
   iodine-server:
     container_name: iodine-server
     build: ./iodine-server
+    profiles: ["iodine"]
     privileged: true
     cap_add:
       - NET_ADMIN
     networks:
-      internet:
-        ipv4_address: 10.20.20.20
       server-network:
         ipv4_address: 192.168.2.2
     restart: no
@@ -82,6 +95,7 @@ services:
   iodine-client:
     container_name: iodine-client
     build: ./iodine-client
+    profiles: ["iodine"]
     privileged: true
     cap_add:
       - NET_ADMIN
@@ -91,21 +105,33 @@ services:
       client-network:
         ipv4_address: 172.16.0.10
     restart: no
-    entrypoint: ["iodine", "-f", "-r", "-L", "0", "-I", "50", "-T", "TXT", "-O", "Base32", "-P", "password123", "tunnel.com"]
+    entrypoint: ["iodine", "-f", "-r", "-P", "password123", "tunnel.com"]
 
-
-
-  detector-wrapper:
-    container_name: detector-wrapper
-    image: python
-    working_dir: /home/detector/
-    environment:
-      - PYTHONUNBUFFERED=1
+  dnscat2-client:
+    container_name: dnscat2-client
+    profiles: ["dnscat2"]
+    build: ./dnscat2-client
     volumes:
-     - ./dns-collector/logs:/home/detector/logs:ro
-     - ./detection/:/home/detector
-    restart: no
-    entrypoint: ["python3", "detector_base/readfile.py"]
+      - ./dnscat2-client/dnscat2:/dnscat2/
+    entrypoint: ["./dnscat", "--dns", "domain=dnscat2-tunnel.com,type=AAAA", "--no-encryption"]
+    networks:
+      client-network:
+        ipv4_address: 172.16.30.30
+    dns:
+      - 172.16.0.2
+
+  dnscat2-server:
+    container_name: dnscat2-server
+    profiles: ["dnscat2"]
+    build: ./dnscat2-server
+    tty: true       
+    stdin_open: true
+    volumes:
+      - ./dnscat2-server/dnscat2:/dnscat2/
+    entrypoint: ["ruby", "./dnscat2.rb", "dnscat2-tunnel.com", "--security=open"]
+    networks:
+      server-network:
+        ipv4_address: 192.168.3.3
 
 
 networks:

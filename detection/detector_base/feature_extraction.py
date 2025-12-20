@@ -19,95 +19,6 @@ def get_fqdn(event: Dict) -> str:
 def get_registered_domain(event: Dict) -> str:
     return tldextract.extract(get_fqdn(event)).top_domain_under_public_suffix
 
-
-def levenshtein_distance(s1: str, s2: str) -> int:
-    """
-    Compute Levenshtein distance between two strings.
-    Useful for comparing subdomain to known legit patterns.
-    """
-    if len(s1) < len(s2):
-        return levenshtein_distance(s2, s1)
-    
-    if len(s2) == 0:
-        return len(s1)
-    
-    previous_row = range(len(s2) + 1)
-    for i, c1 in enumerate(s1):
-        current_row = [i + 1]
-        for j, c2 in enumerate(s2):
-            insertions = previous_row[j + 1] + 1
-            deletions = current_row[j] + 1
-            substitutions = previous_row[j] + (c1 != c2)
-            current_row.append(min(insertions, deletions, substitutions))
-        previous_row = current_row
-    
-    return previous_row[-1]
-
-
-def jaro_distance(s1: str, s2: str) -> float:
-    """
-    Compute Jaro distance (0 = no match, 1 = exact match).
-    Better for typo detection than Levenshtein.
-    """
-    if s1 == s2:
-        return 1.0
-    
-    len1, len2 = len(s1), len(s2)
-    if len1 == 0 or len2 == 0:
-        return 0.0
-    
-    match_distance = max(len1, len2) // 2 - 1
-    s1_matches = [False] * len1
-    s2_matches = [False] * len2
-    
-    matches = 0
-    transpositions = 0
-    
-    for i in range(len1):
-        start = max(0, i - match_distance)
-        end = min(i + match_distance + 1, len2)
-        for j in range(start, end):
-            if s2_matches[j] or s1[i] != s2[j]:
-                continue
-            s1_matches[i] = True
-            s2_matches[j] = True
-            matches += 1
-            break
-    
-    if matches == 0:
-        return 0.0
-    
-    k = 0
-    for i in range(len1):
-        if not s1_matches[i]:
-            continue
-        while not s2_matches[k]:
-            k += 1
-        if s1[i] != s2[k]:
-            transpositions += 1
-        k += 1
-    
-    return (matches / len1 + matches / len2 + 
-            (matches - transpositions / 2) / matches) / 3
-
-
-def jaro_winkler_distance(s1: str, s2: str, p: float = 0.1) -> float:
-    """
-    Jaro-Winkler: Jaro + bonus for common prefix (better for domain names).
-    """
-    jaro = jaro_distance(s1, s2)
-    
-    # Find common prefix length (max 4)
-    prefix = 0
-    for i in range(min(len(s1), len(s2), 4)):
-        if s1[i] == s2[i]:
-            prefix += 1
-        else:
-            break
-    
-    return jaro + (prefix * p * (1 - jaro))
-
-
 def longest_common_substring(s1: str, s2: str) -> int:
     """
     Length of longest common substring (consecutive chars).
@@ -148,7 +59,22 @@ def longest_common_subsequence(s1: str, s2: str) -> int:
     return dp[m][n]
 
 
-def extract_subdomains(qname: str) -> List[str]:
+def extract_subdomain_string(event: dict) -> str:
+    """
+    Extract the subdomain portion of the FQDN (excluding registered domain).
+    Example: 'paaanfty.tunnel.com' -> 'paaanfty'
+    """
+    fqdn = get_fqdn(event)
+    extracted = tldextract.extract(fqdn)
+    subdomain = extracted.subdomain
+    domain = extracted.domain
+    
+    if subdomain:
+        return subdomain
+    return domain
+
+
+def extract_subdomains_list(qname: str) -> List[str]:
     """
     Split domain into subdomains.
     Example: 'paaanfty.tunnel.com' -> ['paaanfty', 'tunnel', 'com']
@@ -160,15 +86,16 @@ def extract_subdomains(qname: str) -> List[str]:
         return None
 
 
+
 def get_longest_subdomain(qname: str) -> str:
     """Return the longest subdomain (usually the leftmost for tunnels)."""
-    parts = extract_subdomains(qname)
+    parts = extract_subdomains_list(qname)
     return max(parts, key=len) if parts else ''
 
 
 def subdomain_length(qname: str) -> int:
     """Total length of leftmost subdomain (before first dot)."""
-    parts = extract_subdomains(qname)
+    parts = extract_subdomains_list(qname)
     return len(parts[0]) if parts else 0
 
 
@@ -177,7 +104,7 @@ def count_max_length_subdomains(qname: str) -> int:
     Count subdomains that hit DNS label length limit (63 bytes).
     Tunnels often max out to maximize bandwidth.
     """
-    parts = extract_subdomains(qname)
+    parts = extract_subdomains_list(qname)
     return sum(1 for part in parts if len(part) == 63)
 
 

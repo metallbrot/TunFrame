@@ -16,6 +16,16 @@ pipelines:
     routing-policy:
       forward: ["console-output", "logfile-json"]
 
+  - name: sniffer_replay
+    afpacket-sniffer:
+      port: 53
+      device: replay0
+    transforms:
+      filtering:
+        drop-queryip-file: "/etc/dnscollector/ip_filterlist.txt"
+    routing-policy:
+      forward: ["console-output", "logfile-json"]
+
 
   - name: "console-output"
     stdout:

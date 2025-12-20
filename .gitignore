@@ -2,6 +2,15 @@
 dnslogs.json
 example_log.json
 **/cache/
+detection/detectors/*
+detection/tests
+results/*
+docker/dnscat2*
+docker/iodine*
+docker/dns-collector/logs/*
+pcaps/*
+experiments/
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

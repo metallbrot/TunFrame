@@ -8,6 +8,7 @@ def readjson(log_file):
         while True:
             line = f.readline()
             if not line:
+                time.sleep(0.01)
                 continue
                 
             try:
@@ -15,15 +16,3 @@ def readjson(log_file):
                 yield dns_event
             except json.JSONDecodeError:
                 continue
-
-'''
-if __name__ == '__main__':
-    if len(sys.argv) == 2:
-        filepath = sys.argv[1]
-    while True:
-        line = next(readjson(filepath))
-        print(line)
-        print()
-        print(feature_extraction.get_registered_domain(line))
-        print()
-'''

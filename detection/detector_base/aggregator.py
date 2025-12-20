@@ -4,8 +4,8 @@ import os
 import tldextract
 from collections import defaultdict
 
-sys.path.append(os.getcwd())
-from detector_base.feature_extraction import safe_get
+
+from detection.detector_base.feature_extraction import safe_get
 
 def group_by_domain(loglines:list[dict]) -> dict[str, list[dict]]:
     grouped_loglines = defaultdict(list)

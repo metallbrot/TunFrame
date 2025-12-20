@@ -1,0 +1,1 @@
+#TODO: generate named.conf files congruent to main cofig
