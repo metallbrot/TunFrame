@@ -10,14 +10,17 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from detection.evaluate import evaluate, detector_ready, stop_event
+from config.dns_config_generator import generate_all_configs
 
 CONFIG_PATH = PROJECT_ROOT / "config.yaml"
-DOCKER_COMPOSE_FILE = PROJECT_ROOT / "docker" / "docker-compose.yml"
-DOCKER_ENV_FILE = PROJECT_ROOT / "docker" / ".env"
+DOCKER_PATH = PROJECT_ROOT / "docker"
+DOCKER_COMPOSE_FILE = DOCKER_PATH / "docker-compose.yml"
+DOCKER_ENV_FILE = DOCKER_PATH / ".env"
+CONFIG_TEMPLATE_DIR = PROJECT_ROOT / "config" / "templates"
 PCAP_DIR = PROJECT_ROOT / "pcaps"
 RESULTS_DIR = PROJECT_ROOT / "results"
 DETECTOR_PATH = PROJECT_ROOT / "detection" / "detectors"
-LOGFILE = PROJECT_ROOT / "docker" / "dns-collector" / "logs" / "dnslogs.json"
+LOGFILE = DOCKER_PATH / "dns-collector" / "logs" / "dnslogs.json"
 
 def generate_dns_entries_from_config(tunneling_domains: list[str], server_ip: str) -> None:
     pass
@@ -88,6 +91,8 @@ def main():
     cfg = load_config(CONFIG_PATH)
     duration = int(safe_get(cfg, ["timing", "duration"], 10))
     tunneling_domains = safe_get(cfg, ["traffic", "tunnel", "tunneling_domains"], [])
+    server_ip = safe_get(cfg, ['traffic', 'tunnel', 'tunnel_server_ip'], '0.0.0.0')
+    public_resolver = safe_get(cfg, ['global', 'public_resolver'])
 
     print(f"[+] Experiment: {safe_get(cfg, ['global', 'name'], '')}")
     print(f"[+] Duration: {duration}s")
@@ -95,6 +100,7 @@ def main():
 
     try:
         write_docker_env()
+        generate_all_configs(tunneling_domains, server_ip, public_resolver, CONFIG_TEMPLATE_DIR, DOCKER_PATH)
         compose_up()
         time.sleep(5)
 
@@ -131,7 +137,11 @@ def main():
                 daemon=True,  
             ).start()
 
-        print(f"[+] Replays started - running for {duration}s...")
+        if wildcard_enabled or benign_enabled:
+            print(f"[+] Replays started - running for {duration}s...")
+        else:
+            print(f"[+] No replays started - running for {duration}s...")
+            print("[+] To test with benign traffic, inject DNS traffic from host machine")
 
         time.sleep(duration)
 

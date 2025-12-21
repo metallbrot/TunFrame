@@ -10,6 +10,7 @@ docker/iodine*
 docker/dns-collector/logs/*
 pcaps/*
 experiments/
+*.conf
 
 
 # Byte-compiled / optimized / DLL files

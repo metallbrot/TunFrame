@@ -1,11 +1,12 @@
 global:
   name: "Test"
   description: "Testing config"
+  public_resolver: "1.1.1.1"
 
 traffic:
   pcap_path: "./pcaps"
   benign:
-    enabled: true
+    enabled: false
     pcap: "benign.pcap"
     pps: 10000
 
@@ -20,10 +21,10 @@ traffic:
     pps: 10
     toolname: "dnscat2"
     tunneling_domains: ["dnscat2-tunnel.com"]
-    tunnel_server_ip: 192.168.0.0/24
+    tunnel_server_ip: 192.168.3.3
 
 timing:
-  duration: 15
+  duration: 100
 
 output:
   logdir: "./results/"
