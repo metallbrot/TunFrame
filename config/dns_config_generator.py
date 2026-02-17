@@ -2,6 +2,9 @@
 """DNS Config Generator for BIND9"""
 
 from pathlib import Path
+import logging
+
+logger = logging.getLogger('dns_detector')
 
 # Static DNS server IPs
 TLD_SERVER_IP = "10.10.10.10"
@@ -29,7 +32,7 @@ def generate_dns_config(template_file: str,
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(config)
 
-    print(f"[+] Generated: {output_file}")
+    logger.info(f"[+] Generated: {output_file}")
 
 
 def generate_all_configs(tunneling_domains: list[str], 
@@ -52,7 +55,7 @@ def generate_all_configs(tunneling_domains: list[str],
     tunnel_domain = tunneling_domains[0] if tunneling_domains else ""
     tunnel_domain_tld = tunnel_domain.split(".")[-1] if "." in tunnel_domain else ""
 
-    # Zone blocks for RESOLVER â†’ point to ROOT
+    # Zone blocks for RESOLVER → point to ROOT
     resolver_zone_blocks = []
     for domain in tunneling_domains:
         zone_block = f"""zone "{domain}" IN {{
@@ -63,7 +66,7 @@ def generate_all_configs(tunneling_domains: list[str],
         resolver_zone_blocks.append(zone_block)
     resolver_zone_blocks_str = "".join(resolver_zone_blocks)
 
-    # Zone blocks for ROOT â†’ point to TLD
+    # Zone blocks for ROOT → point to TLD
     root_zone_blocks = []
     for domain in tunneling_domains:
         zone_block = f"""zone "{domain}" IN {{
@@ -74,7 +77,7 @@ def generate_all_configs(tunneling_domains: list[str],
         root_zone_blocks.append(zone_block)
     root_zone_blocks_str = "".join(root_zone_blocks)
 
-    # Zone blocks for TLD â†’ point to TUNNEL SERVER (attacker)
+    # Zone blocks for TLD → point to TUNNEL SERVER (attacker)
     tld_zone_blocks = []
     for domain in tunneling_domains:
         zone_block = f"""zone "{domain}" IN {{
@@ -122,5 +125,6 @@ def generate_all_configs(tunneling_domains: list[str],
         }
     )
 
-    print("[+] All configs generated")
-    print(f"[+] {len(tunneling_domains)} tunnel domains configured")
+    logger.info("[+] All configs generated")
+    logger.info(f"[+] {len(tunneling_domains)} tunnel domains configured")
+    logger.info(f"[+] Tunneling domains: {tunneling_domains}")

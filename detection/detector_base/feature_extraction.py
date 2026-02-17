@@ -4,16 +4,28 @@ from collections import Counter
 from typing import Dict, Any, List, Tuple
 import tldextract
 from datetime import datetime
+from fqdn import FQDN
 
-def safe_get(event, path, default=''):
+def format_bytes(bytes_val):
+    """Convert bytes to the largest appropriate unit (KB, MB, GB, TB)"""
+    for unit in ['bytes', 'KB', 'MB', 'GB', 'TB']:
+        if bytes_val < 1000.0:
+            return f"{bytes_val:.2f} {unit}"
+        bytes_val /= 1000.0
+    return f"{bytes_val:.2f} PB"
+
+def json_safe_get(event, path, default=None):
     keys = path.split('.')
     current = event
     for key in keys:
-        current = current.get(key, {})
-    return current if isinstance(current, str) else default
+        if isinstance(current, dict):
+            current = current.get(key, default)
+        else:
+            return default
+    return current
 
 def get_fqdn(event: Dict) -> str:
-    fqdn = safe_get(event, "dns.qname", '')
+    fqdn = json_safe_get(event, "dns.qname")
     return fqdn
 
 def get_registered_domain(event: Dict) -> str:
@@ -83,7 +95,7 @@ def extract_subdomains_list(qname: str) -> List[str]:
     if len(split_domain) > 2:
         return qname.strip('.').split('.')[:-2]
     else:
-        return None
+        return []
 
 
 
@@ -169,7 +181,7 @@ def extract_record_type(event: Dict) -> str:
     Extract DNS query type (A, AAAA, TXT, NULL, etc.).
     Tunneling often uses TXT, NULL, CNAME, MX.
     """
-    return safe_get(event, 'dns.qtype')
+    return json_safe_get(event, 'dns.qtype')
 
 
 def extract_ttl(event: Dict) -> int:
@@ -177,7 +189,7 @@ def extract_ttl(event: Dict) -> int:
     Extract TTL from first answer record.
     Tunneling often uses TTL=0 to avoid caching.
     """
-    an_records = safe_get(event, 'dns.resource-records.an', [])
+    an_records = json_safe_get(event, 'dns.resource-records.an', [])
     if an_records and isinstance(an_records, list) and len(an_records) > 0:
         return an_records[0].get('ttl', 0)
     return 0
@@ -188,7 +200,7 @@ def extract_packet_size(event: Dict) -> int:
     DNS packet size (from dns.length).
     Tunneling often has larger packets (200-300 bytes vs 50-100 for normal).
     """
-    return safe_get(event, 'dns.length', 0)
+    return json_safe_get(event, 'dns.length', 0)
 
 
 def extract_response_time_ms(event: Dict) -> float:
@@ -196,7 +208,7 @@ def extract_response_time_ms(event: Dict) -> float:
     Extract latency in milliseconds.
     High latency can indicate tunneling (especially relay tunnels).
     """
-    latency = safe_get(event, 'dnstap.latency', 0)
+    latency = json_safe_get(event, 'dnstap.latency', 0)
     # Latency is often in nanoseconds or seconds, normalize to ms
     if isinstance(latency, (int, float)):
         return latency / 1_000_000 if latency > 1000 else latency
@@ -208,7 +220,7 @@ def extract_rcode(event: Dict) -> str:
     Response code (NOERROR, NXDOMAIN, SERVFAIL, etc.).
     Tunneling usually succeeds (NOERROR).
     """
-    return safe_get(event, 'dns.rcode', 'NOERROR')
+    return json_safe_get(event, 'dns.rcode', 'NOERROR')
 
 def rfc3339ns_to_int(timestamp_str: str) -> int:
     """Convert RFC3339ns to Unix timestamp (int, sortable)"""
@@ -220,5 +232,18 @@ def extract_timestamp(event: Dict) -> str:
     Extract timestamp from the event.
     Used for temporal analysis and sequencing of DNS queries.
     """
-    timestamp_str = safe_get(event, 'dnstap.timestamp-rfc3339ns', '')
+    timestamp_str = json_safe_get(event, 'dnstap.timestamp-rfc3339ns', '')
     return rfc3339ns_to_int(timestamp_str)
+
+def is_response(event: Dict) -> bool:
+   return json_safe_get(event, 'dns.flags.qr') is True
+
+
+def validate_fqdn(logline: Dict) -> bool:
+    fqdn = get_fqdn(logline)
+    if not fqdn or not isinstance(fqdn, str):
+        return False
+    try:
+        return FQDN(fqdn).is_valid
+    except (ValueError, TypeError, UnicodeError):
+        return False

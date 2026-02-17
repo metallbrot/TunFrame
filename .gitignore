@@ -7,10 +7,13 @@ detection/tests
 results/*
 docker/dnscat2*
 docker/iodine*
+docker/dnsexfiltrator*
 docker/dns-collector/logs/*
 pcaps/*
 experiments/
 *.conf
+.vscode
+exfiltration_data/
 
 
 # Byte-compiled / optimized / DLL files
@@ -229,3 +232,4 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+allowlists/tranco.txt

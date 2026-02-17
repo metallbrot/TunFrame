@@ -7,8 +7,8 @@ This repository contains the code and documentation for TunFrame, a framework de
 ### 1. Create virtual environment
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 ```
 
 ### 2. Install dependencies
@@ -21,7 +21,7 @@ pip install -r requirements.txt
 
 To add a new DNS tunneling detection method to TunFrame, follow these steps:
 
-1. Create a new directory under `detection_methods/` with the name of your method.
+1. Create a new directory under `detection/detectors` with the name of your method.
 2. Implement the detection logic in a Python file within that directory. It should follow the interface defined in `detection/detector_base/detector_base.py`.
 
 ## Configuring the Framework
@@ -54,7 +54,7 @@ The framework can be configured using the `config.yaml` file.
 To run the TunFrame framework, execute the following command:
 
 ```bash
-(venv) python3 main.py
+(.venv) python3 main.py
 ```
 
 ## Adding Tunneling Tools

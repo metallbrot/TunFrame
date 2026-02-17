@@ -1,30 +1,36 @@
 global:
-  name: "Test"
-  description: "Testing config"
-  public_resolver: "1.1.1.1"
+  name: "Baseline Exfiltration"
+  description: 'DNSExfiltrator extracting a credit card file (FD=0.1s, RD=0, SL=63, ENC=Base32, SEQ=PLAIN, DC=1, DQ=0)'
+  public_resolver: "129.206.100.126"
+
+timing:
+  duration: 240
+  peacetime_duration: 0
+
+allowlist:
+  allowlist_path: "./allowlists/tranco.txt"
 
 traffic:
   pcap_path: "./pcaps"
   benign:
-    enabled: false
-    pcap: "benign.pcap"
-    pps: 10000
+    enabled: true
+    pcap: "merged.pcap"
+    pps: 20
 
   wildcard:
     enabled: false
-    pcap: "wildcard.pcap"
-    pps: 1000
+    pcap: "bigwildcard.pcap"
+    pps: 15
 
   tunnel:
     replay: false
-    pcap: "tunnel.pcap"
-    pps: 10
-    toolname: "dnscat2"
-    tunneling_domains: ["dnscat2-tunnel.com"]
-    tunnel_server_ip: 192.168.3.3
-
-timing:
-  duration: 100
+    docker: true
+    pcap: "roguerobin.pcap"
+    pps: 5
+    toolname: "dnsexfiltrator"
+    tunneling_domains: [ "dnsexfil.com" ]
+    tunnel_server_ip: 192.168.4.4 #has to be in right subnet
+    expansion_factor: 1.6
 
 output:
   logdir: "./results/"

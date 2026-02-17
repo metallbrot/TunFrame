@@ -1,4 +1,6 @@
 global:
+  worker:
+    buffer-size: 65536
   server-identity: "dns-collector"
   text-format: 
   trace:
@@ -35,3 +37,5 @@ pipelines:
     logfile:
       file-path: /var/log/dnscollector/dnslogs.json
       mode: json
+      max-files: 0
+      max-size: 50000
