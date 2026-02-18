@@ -275,8 +275,11 @@ def main():
             logger.info(f"[+] Starting tunneling tool: {toolname}")
             compose_up(toolname)
 
-        time.sleep(duration - peacetime_duration)
-        logger.info("[+] Experiment duration reached - shutting down")
+        remaining_time = duration - peacetime_duration
+        if not wartime_stop_event.wait(timeout=remaining_time):
+            logger.info("[+] Experiment duration reached - shutting down")
+        else:
+            logger.info("[+] Detection completed early - shutting down")
         wartime_stop_event.set()
         t_detect.join()
         compose_down()

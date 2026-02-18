@@ -137,11 +137,12 @@ def evaluate(detector_path: str, logfile: str, tunneling_domains: list[str], all
     tunnel_count = 0
 
     while not wartime_stop_event.is_set():
+        
         try:
             logline = next(log_generator)
         except StopIteration:
             logger.warning(f"\n⚠ Log ended after {logcount} lines")
-            break
+            break 
 
         # Handle timeout from generator
         if logline is None or get_fqdn(logline) is None:
@@ -171,6 +172,17 @@ def evaluate(detector_path: str, logfile: str, tunneling_domains: list[str], all
         
         for detector in detectors:
             detector.process_line(logline, istunnel)
+
+        done = True
+
+        for detector in detectors:
+            if detector.alarms.intersection(tunneling_domains) != tunneling_domains:
+                done = False
+                break
+
+        if done:
+            logger.info("[+] All tunneling domains detected. Stopping Wartime...")
+            wartime_stop_event.set()
     
     end_timestamp = datetime.now()
     
