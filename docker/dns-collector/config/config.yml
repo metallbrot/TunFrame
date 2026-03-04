@@ -1,8 +1,5 @@
 global:
-  worker:
-    buffer-size: 65536
   server-identity: "dns-collector"
-  text-format: 
   trace:
     verbose: true
     log-malformed: true
@@ -11,10 +8,12 @@ pipelines:
   - name: sniffer
     afpacket-sniffer:
       port: 53
-      device: eth0
+      device: ""              # alle Interfaces
+      enable-defrag-ip: true
+      chan-buffer-size: 65536
     transforms:
       filtering:
-        drop-queryip-file: "/etc/dnscollector/ip_filterlist.txt"
+        keep-queryip-file: "/etc/dnscollector/ip_keeplist.txt"  # nur client-network IPs behalten
     routing-policy:
       forward: ["console-output", "logfile-json"]
 
@@ -22,9 +21,9 @@ pipelines:
     afpacket-sniffer:
       port: 53
       device: replay0
-    transforms:
-      filtering:
-        drop-queryip-file: "/etc/dnscollector/ip_filterlist.txt"
+      enable-defrag-ip: true
+      chan-buffer-size: 65536
+    # kein transforms/filtering hier
     routing-policy:
       forward: ["console-output", "logfile-json"]
 

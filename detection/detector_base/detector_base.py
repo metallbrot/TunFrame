@@ -43,6 +43,8 @@ class Detector(ABC):
 
         domain = get_registered_domain(logline)
 
+        alarm_count_pre = len(self.alarms)
+
         if domain not in self.allowlist:
             start = time.time()
             self.detect(logline)
@@ -50,15 +52,20 @@ class Detector(ABC):
             
             if istunnel and domain not in self.alarms:
                 self.tunneling_missed += 1
+                split_domain = extract_subdomain_string(logline).split('.')
+                #TODO: add more Record Types
                 if is_response(logline) and extract_record_type(logline) == 'A':
                     self.lv_down += 4
-                elif not is_response(logline):
-                    self.lv_up += len(extract_subdomain_string(logline))
+                elif not is_response(logline) and len(split_domain) > 1:
+                    self.lv_up += len(split_domain[-1])
             self.total_process_time += timediff
         
         self.processed_lines += 1
 
-    def evaluate(self, tunneling_domains: set[str], all_domains: set[str], total_loglines: int, tunneling_loglines: int) -> dict[str, float | int]:
+        if len(self.alarms) > alarm_count_pre:
+            logger.info(f"\n{self.__class__.__name__}: Added {domain} to alarms")
+
+    def evaluate(self, tunneling_domains: set[str], all_domains: set[str], total_loglines: int, tunneling_loglines: int, global_allowlist: set) -> dict[str, float | int]:
         cfg = load_config(CONFIG_PATH)
         expansion_factor = cfg_safe_get(cfg, ['traffic', 'tunnel', 'expansion_factor'], 1)
         
@@ -87,8 +94,8 @@ class Detector(ABC):
         logger.info(f"\n--- Detection Metrics ---")
         logger.info(f"Total tunnel queries seen: {tunneling_loglines}")
         logger.info(f"Tunnel queries missed: {self.tunneling_missed}")
-        missed_pct = (self.tunneling_missed / tunneling_loglines * 100) if tunneling_loglines > 0 else 0
-        logger.info(f" ({missed_pct:.1f}% of tunnel traffic missed)")
+        #missed_pct = (self.tunneling_missed / tunneling_loglines * 100) if tunneling_loglines > 0 else 0
+        #logger.info(f" ({missed_pct:.1f}% of tunnel traffic missed)")
         logger.info(f"Traffic volume down: {format_bytes(self.lv_down)}, Traffic volume up: {format_bytes(self.lv_up)}")
         logger.info(f"Estimated real traffic volume up: {format_bytes(self.lv_up / expansion_factor)}")
         
@@ -134,9 +141,7 @@ class Detector(ABC):
             "false_positives_list": list(fp),
             "false_negatives_list": list(fn),
             "tunneling_domains": list(tunneling_domains),
-            "all_domains": list(all_domains),
-            "unique_allowlist": list(self.allowlist),
-            
+            "unique_allowlist": list(self.allowlist - global_allowlist),
             # Performance metrics
             "runtime": runtime,
             "avg_process_time_ms": avg_process_time * 1000,
@@ -146,7 +151,6 @@ class Detector(ABC):
             # Tunneling-specific metrics
             "tunneling_loglines": tunneling_loglines,
             "tunneling_missed": self.tunneling_missed,
-            "tunneling_missed_pct": missed_pct,
             "traffic_volume_up_bytes": self.lv_up,
             "traffic_volume_down_bytes": self.lv_down,
             "estimated_real_traffic_up_bytes": self.lv_up / expansion_factor,

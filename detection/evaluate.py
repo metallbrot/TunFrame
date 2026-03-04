@@ -21,6 +21,22 @@ def cfg_safe_get(cfg: dict, path: list[str], default: any = None) -> any:
         cur = cur[key]
     return cur
 
+def format_duration(seconds: int) -> str:
+    """Convert seconds to human-readable format (e.g., '1h20m' or '5m30s')"""
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    
+    parts = []
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0:
+        parts.append(f"{minutes}m")
+    if secs > 0 and hours == 0:  # Only show seconds if no hours
+        parts.append(f"{secs}s")
+    
+    return "".join(parts) or "0s"
+
 detector_ready = threading.Event()
 wartime_stop_event = threading.Event()
 peacetime_stop_event = threading.Event()
@@ -117,13 +133,32 @@ def evaluate(detector_path: str, logfile: str, tunneling_domains: list[str], all
 
 
 
-    for detector in detectors:
-            local_allowlist = detector.alarms
-            detector.reset()
-            detector.allowlist = local_allowlist.union(global_allowlist)
-            logger.info(f"[+] {detector.__class__.__name__} added {len(detector.allowlist)} domains to allowlist")
+    # Pfade zu den gespeicherten detektorspezifischen Allowlists
+    saved_allowlists_dir = cfg_safe_get(cfg, ["allowlist", "local_allowlist_dir"], None)
 
-    peacetime_done.set()
+    for detector in detectors:
+        detector_name = type(detector).__name__
+
+        if peacetime_duration != 0:
+            # Frisch aus Peacetime generiert
+            local_allowlist = detector.alarms
+        elif saved_allowlists_dir:
+            # Aus gespeicherter Datei laden
+            path = os.path.join(saved_allowlists_dir, f"{detector_name.lower()}.txt")
+            local_allowlist = set()
+            if os.path.exists(path):
+                with open(path, 'r') as f:
+                    local_allowlist = set(f.read().splitlines())
+                logger.info(f"[+] {detector_name}: loaded saved allowlist from {path}")
+            else:
+                logger.warning(f"[!] {detector_name}: no saved allowlist found at {path}")
+        else:
+            local_allowlist = set()
+
+        detector.reset()
+        detector.allowlist = local_allowlist.union(global_allowlist)
+        logger.info(f"[+] {detector_name} allowlist size: {len(detector.allowlist)}")
+
     
     ### WARTIME ###
 
@@ -154,6 +189,8 @@ def evaluate(detector_path: str, logfile: str, tunneling_domains: list[str], all
             logger.debug(f"[!] Invalid FQDN detected: {get_fqdn(logline)}")
             continue
 
+        domain = domain.lower()
+
         if domain and domain not in alldomains:
             alldomains.add(domain)
 
@@ -176,7 +213,7 @@ def evaluate(detector_path: str, logfile: str, tunneling_domains: list[str], all
         done = True
 
         for detector in detectors:
-            if detector.alarms.intersection(tunneling_domains) != tunneling_domains:
+            if detector.alarms.intersection(tunneling_domains) != tunneling_domains or len(tunneling_domains) == 0:
                 done = False
                 break
 
@@ -198,7 +235,7 @@ def evaluate(detector_path: str, logfile: str, tunneling_domains: list[str], all
     results = []
     for detector in detectors:
         logger.info(f"\n=== Evaluation of {type(detector).__name__} ===")
-        results.append(detector.evaluate(seen_tunnels, alldomains, logcount, tunnel_count))
+        results.append(detector.evaluate(seen_tunnels, alldomains, logcount, tunnel_count, global_allowlist))
         logger.info("")
     
     # Build comprehensive metadata
@@ -208,8 +245,8 @@ def evaluate(detector_path: str, logfile: str, tunneling_domains: list[str], all
             "description": cfg_safe_get(cfg, ['global', 'description']),
             "start_timestamp": start_timestamp.isoformat(),
             "end_timestamp": end_timestamp.isoformat(),
-            "duration_seconds": cfg_safe_get(cfg, ['timing', 'duration'], 0),
-            "actual_runtime_seconds": (end_timestamp - start_timestamp).total_seconds(),
+            "duration": format_duration(cfg_safe_get(cfg, ['timing', 'duration'], 0) * 60),
+            "actual_runtime": format_duration((end_timestamp - start_timestamp).total_seconds()),
         },
         "traffic_config": {
             "benign": {
@@ -220,7 +257,7 @@ def evaluate(detector_path: str, logfile: str, tunneling_domains: list[str], all
             },
             "wildcard": {
                 "enabled": cfg_safe_get(cfg, ['traffic', 'wildcard', 'enabled'], False),
-                "pcap": cfg_safe_get(cfg, ['traffic', 'wildcard', 'pcap'], ''),
+                "pczap": cfg_safe_get(cfg, ['traffic', 'wildcard', 'pcap'], ''),
                 "pps": cfg_safe_get(cfg, ['traffic', 'wildcard', 'pps'], 0),
                 "loop": cfg_safe_get(cfg, ['traffic', 'wildcard', 'loop'], False)
             },

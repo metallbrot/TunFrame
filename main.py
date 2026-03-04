@@ -19,7 +19,7 @@ warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from detection.evaluate import evaluate, detector_ready, wartime_stop_event, peacetime_stop_event, peacetime_done, cfg_safe_get
+from detection.evaluate import evaluate, detector_ready, wartime_stop_event, peacetime_stop_event, peacetime_done, cfg_safe_get, format_duration
 from config.dns_config_generator import generate_all_configs
 
 CONFIG_PATH = PROJECT_ROOT / "config.yaml"
@@ -30,22 +30,6 @@ CONFIG_TEMPLATE_DIR = PROJECT_ROOT / "config" / "templates"
 RESULTS_DIR = PROJECT_ROOT / "results"
 DETECTOR_PATH = PROJECT_ROOT / "detection" / "detectors"
 LOGFILE = DOCKER_PATH / "dns-collector" / "logs" / "dnslogs.json"
-
-def format_duration(seconds: int) -> str:
-    """Convert seconds to human-readable format (e.g., '1h20m' or '5m30s')"""
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    secs = seconds % 60
-    
-    parts = []
-    if hours > 0:
-        parts.append(f"{hours}h")
-    if minutes > 0:
-        parts.append(f"{minutes}m")
-    if secs > 0 and hours == 0:  # Only show seconds if no hours
-        parts.append(f"{secs}s")
-    
-    return "".join(parts) or "0s"
 
 
 # === LOGGER SETUP (ganz am Anfang) ===
@@ -157,7 +141,7 @@ def main():
     tunneling_domains = cfg_safe_get(cfg, ["traffic", "tunnel", "tunneling_domains"], [])
     server_ip = cfg_safe_get(cfg, ['traffic', 'tunnel', 'tunnel_server_ip'], '192.168.4.4')
     public_resolver = cfg_safe_get(cfg, ['global', 'public_resolver'], '1.1.1.1')
-    allowlist = cfg_safe_get(cfg, ['allowlist', 'allowlist_path'])
+    allowlist = cfg_safe_get(cfg, ['allowlist', 'global_allowlist_path'])
 
     if not peacetime_duration:
         peacetime_duration = 0
@@ -169,9 +153,9 @@ def main():
     logger.info("EXPERIMENT SETUP")
     logger.info("="*60)
     logger.info(f"[+] Experiment: {cfg_safe_get(cfg, ['global', 'name'], '')}")
-    logger.info(f"[+] Peacetime Duration: {peacetime_duration}s")
-    logger.info(f"[+] Wartime Duration: {duration - peacetime_duration}s")
-    logger.info(f"[+] Total Duration: {duration}s")
+    logger.info(f"[+] Peacetime Duration: {format_duration(peacetime_duration)}")
+    logger.info(f"[+] Wartime Duration: {format_duration(duration - peacetime_duration)}")
+    logger.info(f"[+] Total Duration: {format_duration(duration)}")
     logger.info("="*60)
 
     results_file = RESULTS_DIR / f"results_{cfg_safe_get(cfg, ['global', 'name'], 'experiment')}_{int(time.time())}.json"

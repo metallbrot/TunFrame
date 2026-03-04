@@ -1,20 +1,21 @@
 global:
-  name: "Baseline Exfiltration"
-  description: 'DNSExfiltrator extracting a credit card file (FD=0.1s, RD=0, SL=63, ENC=Base32, SEQ=PLAIN, DC=1, DQ=0)'
+  name: "Profile Stealthy at 20pps"
+  description: '20pps with peacetime lists, extracting file with 100 lines of credit card data'
   public_resolver: "129.206.100.126"
 
 timing:
-  duration: 240
+  duration: 100000
   peacetime_duration: 0
 
 allowlist:
-  allowlist_path: "./allowlists/tranco.txt"
+  global_allowlist_path: "./allowlists/tranco.txt"
+  local_allowlist_dir: "./allowlists/local/20pps"
 
 traffic:
   pcap_path: "./pcaps"
   benign:
     enabled: true
-    pcap: "merged.pcap"
+    pcap: "merged_mar2.pcap"
     pps: 20
 
   wildcard:
@@ -26,11 +27,11 @@ traffic:
     replay: false
     docker: true
     pcap: "roguerobin.pcap"
-    pps: 5
+    pps: 0
     toolname: "dnsexfiltrator"
-    tunneling_domains: [ "dnsexfil.com" ]
+    tunneling_domains: ["dnsexfil.com", "dnsexfil.it", "dnsexfil.fr", "dnsexfil.us", "dnsexfil.co", "dnsexfil.pl", "dnsexfil.to", "dnsexfil.xyz", "dnsexfil.shop", "dnsexfil.gr"]
     tunnel_server_ip: 192.168.4.4 #has to be in right subnet
-    expansion_factor: 1.6
+    expansion_factor: 4
 
 output:
   logdir: "./results/"
