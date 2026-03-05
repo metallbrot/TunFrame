@@ -1,0 +1,37 @@
+global:
+  name: "Name"
+  description: "description"
+  public_resolver: "1.1.1.1"
+
+timing:
+  duration: 60
+  peacetime_duration: 20
+
+allowlist:
+  global_allowlist_path:
+  local_allowlist_dir:
+
+traffic:
+  pcap_path: "./pcaps"
+  benign:
+    enabled: true
+    pcap: "benign.pcap"
+    pps: 20
+
+  wildcard:
+    enabled: false
+    pcap: "wildcard.pcap"
+    pps: 15
+
+  tunnel:
+    replay: false
+    docker: true
+    pcap: "tunneling.pcap"
+    pps: 0s
+    toolname: "docker_container_name_tunnel" #name of container in docker compose
+    tunneling_domains: ["tunnel.com"]
+    tunnel_server_ip: 192.168.4.4 #has to be in right subnet
+    expansion_factor: 1.6
+
+output:
+  logdir: "./results/"
