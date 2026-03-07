@@ -159,6 +159,7 @@ def evaluate(detector_path: str, logfile: str, tunneling_domains: list[str], all
         detector.allowlist = local_allowlist.union(global_allowlist)
         logger.info(f"[+] {detector_name} allowlist size: {len(detector.allowlist)}")
 
+    peacetime_done.set()
     
     ### WARTIME ###
 
