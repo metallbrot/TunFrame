@@ -72,7 +72,7 @@ TunFrame/
 
 TunFrame orchestrates three traffic sources simultaneously on an isolated Docker network:
 
-1. **Benign traffic** – replayed from a PCAP to simulate normal DNS activity
+1. **Benign traffic** – replayed from a PCAP to simulate normal DNS activity or injected via injection of DNS traffic of host device into resolver container
 2. **Wildcard traffic** – replayed PCAP to stress-test allowlist coverage
 3. **Tunnel traffic** – either replayed from PCAP or generated live via a Dockerized tunneling tool
 
