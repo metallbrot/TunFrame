@@ -264,6 +264,3 @@ Results are written to the directory specified in `output.logdir`. Each run prod
 - Per-detector logs with flagged DNS queries
 - Aggregate benchmark metrics (precision, recall, F1) per detector
 - A run summary with configuration snapshot and timestamps
-
-
-![TunFrame Architecture](./documentation/docker_architecture.png)
