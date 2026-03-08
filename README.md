@@ -58,16 +58,10 @@ TunFrame/
 ├── requirements.txt
 ├── docker-compose.yaml            # Docker setup for tunneling tools
 ├── detection/
-│   ├── detector_base/
-│   │   └── detector_base.py       # Abstract base class for detectors
-│   └── detectors/                 # One subdirectory per detection method
-├── pcaps/                         # PCAP files for replay mode
-├── allowlists/
-│   ├── tranco.txt                 # Global allowlist (e.g., Tranco top domains)
-│   └── local/                     # Per-detector allowlists
-├── results/                       # Output logs and benchmark results
-└── documentation/
-    └── docker_architecture.png
+    ├── detector_base/
+    │   └── detector_base.py       # Abstract base class for detectors
+    └── detectors/                 # One subdirectory per detection method
+
 ```
 
 ---
