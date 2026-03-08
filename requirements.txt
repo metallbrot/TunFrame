@@ -68,5 +68,4 @@ traitlets==5.14.3
 tzdata==2025.2
 urllib3==2.6.0
 wcwidth==0.3.1
-WHLL @ file:///Users/anonymized/Documents/it_projects/bachelorarbeit/TunFrame/detection/detectors/ibHHDetector/WeightedHyperLogLog
 zope.interface==8.1.1
