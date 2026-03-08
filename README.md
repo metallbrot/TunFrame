@@ -84,7 +84,7 @@ TunFrame orchestrates three traffic sources simultaneously on an isolated Docker
 
 Each configured detector monitors DNS traffic in real time. A `peacetime` phase (optional) runs before tunneling starts, allowing detectors to build a baseline. Results are written to the configured `output.logdir`.
 
-**Replay vs. Docker mode** (mutually exclusive):
+**Replay vs. Docker mode** :
 
 | Mode | Config | Description |
 |---|---|---|
@@ -108,7 +108,7 @@ Each configured detector monitors DNS traffic in real time. A `peacetime` phase 
    - Server → `server-network`
 3. In `config.yaml`, set:
    - `traffic.tunnel.tunneling_domains` – domain(s) the tool uses
-   - `traffic.tunnel.tunnel_server_ip` – IP of the tunnel server (must be in `192.168.0.0/16`)
+   - `traffic.tunnel.tunnel_server_ip` – IP of the tunnel server (must be in `192.168.0.0/16` and match the server's IP in step 2)
    - `traffic.tunnel.toolname` – name used for logging
 
 ---
@@ -187,7 +187,7 @@ All settings are defined in `config.yaml`. Parameters marked **required** must b
 
 ## Example Configurations
 
-### Minimal — Replay Mode
+### Minimal — Replay Mode with no benign replay traffic
 
 ```yaml
 global:
