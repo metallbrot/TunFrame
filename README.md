@@ -199,7 +199,7 @@ traffic:
     replay: true
     docker: false
     pcap: "tunnel.pcap"
-    tunneling_domains: ["tunnel.example.com"]
+    tunneling_domains: ["example.com"]
 
 output:
   logdir: "results"
@@ -233,7 +233,7 @@ traffic:
     replay: false
     docker: true
     toolname: "dnscat2"
-    tunneling_domains: ["tunnel.example.com"]
+    tunneling_domains: ["example.com"]
     tunnel_server_ip: "192.168.3.3"
     expansion_factor: 1
 
