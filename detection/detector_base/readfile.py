@@ -1,6 +1,5 @@
 import json
 import time
-import sys
 
 def readjson(log_file, timeout_seconds=5, max_timeouts=3):
     """

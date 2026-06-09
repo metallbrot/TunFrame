@@ -8,8 +8,8 @@ timing:
   peacetime_duration: 20
 
 allowlist:
-  global_allowlist_path:
-  local_allowlist_dir:
+  global_allowlist_path: ""
+  local_allowlist_dir: ""
 
 traffic:
   pcap_path: "./pcaps"

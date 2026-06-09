@@ -7,7 +7,6 @@ from detection.detector_base.readfile import readjson
 from detection.detector_base.feature_extraction import get_registered_domain, is_response, extract_record_type, extract_subdomain_string, json_safe_get, get_fqdn, validate_fqdn
 import json
 from datetime import datetime
-import time
 
 # Get the logger configured in main.py
 logger = logging.getLogger('dns_detector')
