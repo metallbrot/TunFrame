@@ -1,6 +1,4 @@
 # for windowing and aggregation by domain name or host ip
-import sys
-import os
 import tldextract
 from collections import defaultdict
 

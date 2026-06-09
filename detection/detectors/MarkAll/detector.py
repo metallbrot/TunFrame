@@ -1,7 +1,3 @@
-
-import sys
-import os
-       
 from detection.detector_base.detector_base import Detector
 from detection.detector_base.feature_extraction import get_registered_domain
 

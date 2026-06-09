@@ -1,5 +1,4 @@
 import math
-import re
 from collections import Counter
 from typing import Dict, Any, List, Tuple
 import tldextract
