@@ -81,8 +81,10 @@ def evaluate(detector_path: str, logfile: str, tunneling_domains: list[str], all
     tunneling_domains = set(tunneling_domains)
 
     global_allowlist = set()
-    with open(allowlist_path, 'r') as file:
-        global_allowlist.update(file.read().splitlines())
+
+    if allowlist_path:
+        with open(allowlist_path, 'r') as file:
+            global_allowlist.update(file.read().splitlines())
 
 
     ### PEACETIME ###
@@ -273,7 +275,7 @@ def evaluate(detector_path: str, logfile: str, tunneling_domains: list[str], all
                 "expansion_factor": cfg_safe_get(cfg, ['traffic', 'tunnel', 'expansion_factor'], 1)
             },
             "pcap_path": cfg_safe_get(cfg, ['traffic', 'pcap_path'], ''),
-            "allowlist_path": str(allowlist_path)
+            "allowlist_path": cfg_safe_get(cfg, ["allowlist", "local_allowlist_dir"], None)
         },
         "dataset_statistics": {
             "total_loglines": logcount,
