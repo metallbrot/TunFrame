@@ -1,5 +1,5 @@
 global:
-  name: "Name"
+  name: "name"
   description: "description"
   public_resolver: "1.1.1.1"
 
@@ -25,7 +25,7 @@ traffic:
 
   tunnel:
     replay: false
-    docker: true
+    docker: false
     pcap: "tunneling.pcap"
     pps: 0s
     toolname: "docker_container_name_tunnel" #name of container in docker compose
