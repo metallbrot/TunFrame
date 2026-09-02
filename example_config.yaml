@@ -27,7 +27,7 @@ traffic:
     replay: false
     docker: false
     pcap: "tunneling.pcap"
-    pps: 0s
+    pps: 0
     toolname: "docker_container_name_tunnel" #name of container in docker compose
     tunneling_domains: ["tunnel.com"]
     tunnel_server_ip: 192.168.4.4 #has to be in right subnet
