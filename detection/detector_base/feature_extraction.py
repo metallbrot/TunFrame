@@ -226,13 +226,31 @@ def rfc3339ns_to_int(timestamp_str: str) -> int:
     dt = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
     return int(dt.timestamp())
 
-def extract_timestamp(event: Dict) -> str:
+def extract_timestamp_date(event: Dict) -> datetime:
     """
     Extract timestamp from the event.
     Used for temporal analysis and sequencing of DNS queries.
     """
     timestamp_str = json_safe_get(event, 'dnstap.timestamp-rfc3339ns', '')
+    return datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+
+def extract_timestamp(event: Dict) -> int:
+    timestamp_str = json_safe_get(event, 'dnstap.timestamp-rfc3339ns', '')
     return rfc3339ns_to_int(timestamp_str)
+
+def extract_type(event: Dict) -> str:
+    return json_safe_get(event, 'dns.qclass')
+
+def extract_query_ip(event: Dict) -> str:
+    return json_safe_get(event, 'network.query-ip')
+
+def get_txt_content(logline: dict) -> list:
+    """Extract TXT record data from a DNS response."""
+    txt_records = []
+    for rr in logline.get("dns", {}).get("resource-records", {}).get("an", []):
+        if rr.get("type") == "TXT":
+            txt_records.extend(rr.get("data", []))
+    return txt_records
 
 def is_response(event: Dict) -> bool:
    return json_safe_get(event, 'dns.flags.qr') is True
