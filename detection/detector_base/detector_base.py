@@ -35,6 +35,17 @@ class Detector(ABC):
         self.allowlist = set()
         self.alarms = set()
 
+    def reset(self):
+        """Reset per-phase counters without clearing allowlist"""
+        self.start_time = None
+        self.first_alarm_time = None
+        self.total_process_time = 0.0
+        self.processed_lines = 0
+        self.tunneling_missed = 0
+        self.lv_up = 0
+        self.lv_down = 0
+        self.alarms = set()
+
     def process_line(self, logline: dict, istunnel: bool):
         if self.start_time is None:
             self.start_time = time.time()

@@ -3,6 +3,7 @@ import importlib
 import inspect
 import threading
 import logging
+import time
 from detection.detector_base.readfile import readjson
 from detection.detector_base.feature_extraction import get_registered_domain, is_response, extract_record_type, extract_subdomain_string, json_safe_get, get_fqdn, validate_fqdn
 import json
@@ -40,6 +41,9 @@ detector_ready = threading.Event()
 wartime_stop_event = threading.Event()
 peacetime_stop_event = threading.Event()
 peacetime_done = threading.Event()
+tunnel_started_event = threading.Event()
+tunnel_phase_start_event = threading.Event()
+tunnel_phase_complete_event = threading.Event()
 
 def load_detectors(detectors_path, active_detectors=None):
     """Load detector classes dynamically, filtered by active_detectors list."""
@@ -75,8 +79,8 @@ def evaluate(detector_path: str, logfile: str, tunneling_domains: list[str],
     detectors = [cls() for cls in detector_classes]
     logger.info(f"\n{len(detectors)} detectors loaded: {[type(d).__name__ for d in detectors]}\n")
     alldomains = set()
-    # This allows up to 60 seconds of no data before considering file complete
-    log_generator = readjson(logfile, timeout_seconds=30, max_timeouts=2)
+    # Use shorter timeout to allow frequent phase event checking
+    log_generator = readjson(logfile, timeout_seconds=1, max_timeouts=3)
 
     tunneling_domains = set(tunneling_domains)
 
@@ -88,8 +92,26 @@ def evaluate(detector_path: str, logfile: str, tunneling_domains: list[str],
 
 
     ### PEACETIME ###
-    duration = int(cfg_safe_get(cfg, ["timing", "duration"], 60))
-    peacetime_duration = cfg_safe_get(cfg, ["timing", "peacetime_duration"], duration // 3)
+    # Read timing configuration - all values in config are in MINUTES, convert to seconds
+    # Support both integer and float values (e.g., 1 or 0.5 for 1 minute or 30 seconds)
+    # Get wartime_duration with backward compatibility
+    wartime_duration_config = cfg_safe_get(cfg, ["timing", "wartime_duration"], None)
+    duration_config = cfg_safe_get(cfg, ["timing", "duration"], 60)  # minutes
+    
+    if wartime_duration_config is None:
+        # Fallback to old 'duration' config key for backward compatibility
+        wartime_duration = float(duration_config) * 60  # Convert minutes to seconds
+    else:
+        wartime_duration = float(wartime_duration_config) * 60  # Convert minutes to seconds
+    
+    # Get peacetime_duration
+    peacetime_duration_config = cfg_safe_get(cfg, ["timing", "peacetime_duration"], None)
+    if peacetime_duration_config is None:
+        # Default to duration_config / 3 if not specified (use float division)
+        peacetime_duration = (float(duration_config) / 3) * 60  # Convert minutes to seconds
+    else:
+        peacetime_duration = float(peacetime_duration_config) * 60  # Convert minutes to seconds
+    
     if not peacetime_duration:
         peacetime_duration = 0
 
@@ -114,6 +136,7 @@ def evaluate(detector_path: str, logfile: str, tunneling_domains: list[str],
             
             # Handle timeout from generator
             if logline is None:
+                time.sleep(0.01)
                 continue
 
             domain = get_registered_domain(logline)
@@ -162,12 +185,9 @@ def evaluate(detector_path: str, logfile: str, tunneling_domains: list[str],
         logger.info(f"[+] {detector_name} allowlist size: {len(detector.allowlist)}")
 
     peacetime_done.set()
-    
-    ### WARTIME ###
 
-    logger.info("\n" + "="*60)
-    logger.info("WARTIME PHASE - Detection Active")
-    logger.info("="*60)
+    # WARTIME
+    
 
     tunneling_domains_seen = {domain: False for domain in tunneling_domains}
     
@@ -183,7 +203,10 @@ def evaluate(detector_path: str, logfile: str, tunneling_domains: list[str],
             break 
 
         # Handle timeout from generator
-        if logline is None or get_fqdn(logline) is None:
+        if logline is None:
+            time.sleep(0.001)
+            continue
+        if get_fqdn(logline) is None:
             continue
 
         domain = get_registered_domain(logline)
@@ -248,7 +271,8 @@ def evaluate(detector_path: str, logfile: str, tunneling_domains: list[str],
             "description": cfg_safe_get(cfg, ['global', 'description']),
             "start_timestamp": start_timestamp.isoformat(),
             "end_timestamp": end_timestamp.isoformat(),
-            "duration": format_duration(cfg_safe_get(cfg, ['timing', 'duration'], 0) * 60),
+            "wartime_duration": format_duration(wartime_duration),
+            "peacetime_duration": format_duration(peacetime_duration),
             "actual_runtime": format_duration((end_timestamp - start_timestamp).total_seconds()),
         },
         "traffic_config": {

