@@ -129,7 +129,7 @@ All settings are defined in `config.yaml`. Parameters marked **required** must b
 
 | Parameter | Type | Required | Description | Default |
 |---|---|---|---|---|
-| `timing.duration` | int | **Yes** | Total test run duration in seconds | `100` |
+| `timing.duration` | int | **Yes** | Total test run duration in minutes | `10` |
 | `timing.peacetime_duration` | int | No | Duration of pre-tunnel baseline phase in seconds (no tunneling occurs) | `0` |
 
 ### Allowlist Settings
