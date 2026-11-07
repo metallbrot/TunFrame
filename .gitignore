@@ -7,7 +7,10 @@ detection/tests
 results/*
 docker/dnscat2*
 docker/iodine*
-docker/dnsexfiltrator*
+docker/dnsexfiltrator-client/data/*.csv
+docker/dnsexfiltrator-client/data/domains.txt
+docker/dnsexfiltrator-server/volume/test.zip
+docker/dnsexfiltrator-server/volume/domains.txt
 docker/dns-collector/logs/*
 pcaps/*
 experiments/
