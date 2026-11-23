@@ -87,8 +87,11 @@ def fromBase32(string):
 
 
 def fromBase64(string):
-    """Decode Base64 string (with URL-safe character handling)."""
-    string = string.replace('-', '+').replace('_', '/')
+    """Decode Base64 string (with DNS-safe character handling).
+    DNS-safe variant mapping: + -> -, / -> x
+    Reverse mapping: - -> +, x -> /
+    """
+    string = string.replace('-', '+').replace('x', '/')
     mod = len(string) % 4
     padding = {1: "===", 2: "==", 3: "="}.get(mod, "")
     return b64decode(string + padding)

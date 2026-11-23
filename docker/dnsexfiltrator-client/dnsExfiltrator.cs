@@ -67,7 +67,15 @@ namespace DNSExfiltrator
 
         private static string ToBase64(byte[] data)
         {
-            return Convert.ToBase64String(data).Replace("=", "").Replace("+", "-").Replace("/", "_");
+            // DNS-safe Base64 variant:
+            // Standard Base64 uses: ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/
+            // DNS-safe variant: ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-x
+            // Mapping: + -> -, / -> x
+            // This is reversible: - -> +, x -> /
+            string encoded = Convert.ToBase64String(data).Replace("=", "");
+            encoded = encoded.Replace("+", "-");
+            encoded = encoded.Replace("/", "x");
+            return encoded;
         }
 
         private static string ToHex(byte[] data)

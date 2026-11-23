@@ -24,7 +24,7 @@ class Detector(ABC):
     def detect(self, logline: dict):
         pass
 
-    def reset(self):
+    def full_reset(self):
         self.start_time = None
         self.first_alarm_time = None
         self.total_process_time = 0.0
@@ -35,8 +35,7 @@ class Detector(ABC):
         self.allowlist = set()
         self.alarms = set()
 
-    def reset(self):
-        """Reset per-phase counters without clearing allowlist"""
+    def phase_reset(self):
         self.start_time = None
         self.first_alarm_time = None
         self.total_process_time = 0.0
@@ -45,6 +44,7 @@ class Detector(ABC):
         self.lv_up = 0
         self.lv_down = 0
         self.alarms = set()
+
 
     def process_line(self, logline: dict, istunnel: bool):
         if self.start_time is None:
@@ -72,7 +72,13 @@ class Detector(ABC):
         self.processed_lines += 1
 
         if len(self.alarms) > alarm_count_pre:
-            logger.info(f"\n{self.__class__.__name__}: Added {domain} to alarms")
+            # Color code: green for tunneling domains, red for false positives
+            if istunnel:
+                # Tunneling domain (true positive) - green
+                logger.info(f"\n{self.__class__.__name__}: Added \033[92m{domain}\033[0m to alarms")
+            else:
+                # Non-tunneling domain (false positive) - red
+                logger.info(f"\n{self.__class__.__name__}: Added \033[91m{domain}\033[0m to alarms")
 
     def evaluate(self, tunneling_domains: set[str], all_domains: set[str], total_loglines: int, tunneling_loglines: int, global_allowlist: set) -> dict[str, float | int]:
         cfg = load_config(CONFIG_PATH)
@@ -103,8 +109,6 @@ class Detector(ABC):
         logger.info(f"\n--- Detection Metrics ---")
         logger.info(f"Total tunnel queries seen: {tunneling_loglines}")
         logger.info(f"Tunnel queries missed: {self.tunneling_missed}")
-        #missed_pct = (self.tunneling_missed / tunneling_loglines * 100) if tunneling_loglines > 0 else 0
-        #logger.info(f" ({missed_pct:.1f}% of tunnel traffic missed)")
         logger.info(f"Traffic volume down: {format_bytes(self.lv_down)}, Traffic volume up: {format_bytes(self.lv_up)}")
         logger.info(f"Estimated real traffic volume up: {format_bytes(self.lv_up / expansion_factor)}")
         
