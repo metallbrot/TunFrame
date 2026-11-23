@@ -12,6 +12,161 @@ from datetime import datetime
 # Get the logger configured in main.py
 logger = logging.getLogger('dns_detector')
 
+
+def load_global_allowlist(allowlist_path: str) -> set:
+    """Load global allowlist from file."""
+    global_allowlist = set()
+    if allowlist_path:
+        with open(allowlist_path, 'r') as file:
+            global_allowlist.update(file.read().splitlines())
+    return global_allowlist
+
+
+def save_results(results_file: str, results: dict, metadata: dict) -> None:
+    """Save results to JSON file."""
+    output = {
+        "metadata": metadata,
+        "detectors": results
+    }
+    with open(results_file, 'w') as f:
+        json.dump(output, f, indent=2)
+    logger.info(f"[+] Results saved to {results_file}")
+
+
+def generate_allowlists(detectors: list, global_allowlist: set, peace_logcount: int) -> None:
+    """Generate and assign allowlists to detectors after peacetime."""
+    for detector in detectors:
+        detector_name = type(detector).__name__
+        # Get allowlist from detector's alarms (from peacetime)
+        local_allowlist = detector.alarms
+        detector.full_reset()
+        detector.allowlist = local_allowlist.union(global_allowlist)
+        logger.info(f"[+] {detector_name} allowlist size: {len(detector.allowlist)}")
+
+
+def run_peacetime(detectors: list, log_generator, tunneling_domains: set) -> tuple:
+    """Run peacetime phase to build allowlists.
+    
+    Returns:
+        tuple: (peace_logcount, alldomains)
+    """
+    alldomains = set()
+    peace_logcount = 0
+    
+    peacetime_stop_event.clear()
+    
+    while not peacetime_stop_event.is_set():
+        try:
+            logline = next(log_generator)
+        except StopIteration:
+            logger.warning(f"\n⚠ Log ended after {peace_logcount} lines")
+            break
+        
+        # Handle timeout from generator
+        if logline is None:
+            time.sleep(0.01)
+            continue
+
+        domain = get_registered_domain(logline)
+        if domain in tunneling_domains:
+            logger.warning(f"[!] WARNING! Tunneling domain {domain} seen during peacetime!")
+
+        if not validate_fqdn(logline) or not domain:
+            logger.debug(f"[!] Invalid FQDN detected: {get_fqdn(logline)}")
+            continue
+        
+        # Only update progress every 100 lines
+        if peace_logcount % 100 == 0:
+            logger.info(f"[PEACETIME] Processing line {peace_logcount} ({domain})", extra={'progress': True})
+        
+        peace_logcount += 1
+        
+        domain = domain.lower()
+        if domain and domain not in alldomains:
+            alldomains.add(domain)
+
+        for detector in detectors:
+            detector.process_line(logline, False)
+    
+    return peace_logcount, alldomains
+
+
+def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_allowlist: set, alldomains: set) -> tuple:
+    """Run wartime phase to detect tunneling.
+    
+    Returns:
+        tuple: (results, logcount, tunnel_count, seen_tunnels, alldomains)
+    """
+    tunneling_domains_seen = {domain: False for domain in tunneling_domains}
+    
+    logcount = 0
+    tunnel_count = 0
+    
+    wartime_stop_event.clear()
+    
+    while not wartime_stop_event.is_set():
+        try:
+            logline = next(log_generator)
+        except StopIteration:
+            logger.warning(f"\n⚠ Log ended after {logcount} lines")
+            break
+
+        # Handle timeout from generator
+        if logline is None:
+            time.sleep(0.001)
+            continue
+        if get_fqdn(logline) is None:
+            continue
+
+        domain = get_registered_domain(logline)
+        
+        if not validate_fqdn(logline) or domain == "":
+            logger.debug(f"[!] Invalid FQDN detected: {get_fqdn(logline)}")
+            continue
+
+        domain = domain.lower()
+
+        if domain and domain not in alldomains:
+            alldomains.add(domain)
+
+        # Only update progress every 100 lines
+        if logcount % 100 == 0:
+            logger.info(f"[WARTIME] Processing line {logcount} ({domain})", extra={'progress': True})
+        
+        istunnel = False
+        logcount += 1
+        
+        if domain in tunneling_domains:
+            tunneling_domains_seen[domain] = True
+            istunnel = True
+            tunnel_count += 1
+            logger.debug(f"[!] Tunneling seen...({domain})")
+        
+        for detector in detectors:
+            detector.process_line(logline, istunnel)
+
+        done = True
+
+        for detector in detectors:
+            if detector.alarms.intersection(tunneling_domains) != tunneling_domains or len(tunneling_domains) == 0:
+                done = False
+                break
+
+        if done:
+            logger.info("[+] All tunneling domains detected. Stopping Wartime...")
+            wartime_stop_event.set()
+    
+    seen_tunnels = set([domain for domain, seen in tunneling_domains_seen.items() if seen])
+    
+    results = []
+    for detector in detectors:
+        logger.info(f"\n=== Evaluation of {type(detector).__name__} ===")
+        results.append(detector.evaluate(seen_tunnels, alldomains, logcount, tunnel_count, global_allowlist))
+        logger.info("")
+    
+    return results, logcount, tunnel_count, seen_tunnels, alldomains
+
+
 def cfg_safe_get(cfg: dict, path: list[str], default: any = None) -> any:
     """safe get values from yaml with default values"""
     cur = cfg
