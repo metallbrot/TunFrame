@@ -226,12 +226,12 @@ namespace DNSExfiltrator
 
             PrintColor(String.Format("[*] File size: {0} bytes", zipData.Length));
 
-            // Calculate effective label size for base32map (must be multiple of 3)
+            // Calculate effective label size for base32map (number of base32 chars before mapping)
             int effectiveLabelSize = labelMaxSize;
             if (encoding == "base32map")
             {
-                effectiveLabelSize = (labelMaxSize / 3) * 3;  // Round down to multiple of 3
-                PrintColor(String.Format("[*] Effective label size (base32map): {0} chars", effectiveLabelSize));
+                effectiveLabelSize = labelMaxSize / 3;  // Number of base32 characters (each maps to 3 chars)
+                PrintColor(String.Format("[*] Effective label size (base32map): {0} base32 chars", effectiveLabelSize));
             }
 
             // INIT with file size (not totalRequests)
@@ -298,21 +298,25 @@ namespace DNSExfiltrator
             switch (encoding)
             {
                 case "base64":
-                    // base64: 4 bytes = 3 chars
-                    chunkSize = effectiveLabelSize / 4 * 3;
+                    // base64: 3 bytes = 4 chars, so for L chars: floor(L * 3 / 4) bytes
+                    chunkSize = (effectiveLabelSize * 3) / 4;
                     break;
                 case "hex":
                     // hex: 1 byte = 2 chars
                     chunkSize = effectiveLabelSize / 2;
                     break;
                 case "base32map":
+                    // base32map: effectiveLabelSize is number of base32 chars, each maps to 3 final chars
+                    // base32: 5 bytes = 8 chars, so for L base32 chars: floor(L * 5 / 8) bytes
+                    chunkSize = (effectiveLabelSize * 5) / 8;
+                    break;
                 case "base32":
                     // base32: 5 bytes = 8 chars (5 bits per base32 char)
                     chunkSize = (effectiveLabelSize * 5) / 8;
                     break;
                 default:
                     // fallback to base64 calculation
-                    chunkSize = effectiveLabelSize / 4 * 3;
+                    chunkSize = (effectiveLabelSize * 3) / 4;
                     break;
             }
 
