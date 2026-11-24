@@ -27,8 +27,19 @@ def get_fqdn(event: Dict) -> str:
     fqdn = json_safe_get(event, "dns.qname")
     return fqdn
 
+def normalize_domain(domain) -> str:
+    """Return a domain in the canonical form used everywhere in TunFrame.
+
+    Lowercase, surrounding whitespace and a trailing dot removed. DNS names are
+    case-insensitive, so ground truth, alarms and allowlists all compare this
+    form.
+    """
+    return str(domain or "").strip().rstrip(".").lower()
+
+
 def get_registered_domain(event: Dict) -> str:
-    return tldextract.extract(get_fqdn(event)).top_domain_under_public_suffix
+    """Return the normalized (lowercase) registered domain of the query name."""
+    return normalize_domain(tldextract.extract(get_fqdn(event)).top_domain_under_public_suffix)
 
 def longest_common_substring(s1: str, s2: str) -> int:
     """

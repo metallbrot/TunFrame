@@ -344,3 +344,17 @@ Entries are added in the commit that introduces the change.
   `reset()` (same effect as the old `phase_reset()` from M7).
 - **Affected outputs**: none. API change: detectors calling `full_reset()` or
   `phase_reset()` must call `reset()` (no local detector does).
+
+## D6: Domains are compared case-insensitively everywhere
+
+- **Old**: `run_wartime()` lowercased domains for ground truth and the domain
+  universe, but `process_line()`, allowlist checks and most detectors used the
+  raw registered domain, and configured tunneling domains were not lowercased.
+  A mixed-case query or config domain could split TP/FP accounting or never be
+  labelled as tunnel traffic.
+- **New**: `feature_extraction.get_registered_domain()` returns the normalized
+  form (`normalize_domain()`: lowercase, no trailing dot). Configured tunneling
+  domains (global and per DNSExfiltrator config) are normalized the same way;
+  the global allowlist already is (C7).
+- **Affected outputs**: none for all-lowercase traffic and configs (the
+  audited log had no mixed-case names); otherwise TP/FP/FN and tunnel counts.

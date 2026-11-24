@@ -258,6 +258,10 @@ try:
     d5 = pc == 1
 except AttributeError:
     d5 = False
+dl = FlagTunnel()
+ev.wartime_stop_event.clear()
+o6 = ev.run_wartime([dl], gen([evt('AbC.TuNnEl.CoM')]), {main.normalize_domain('Tunnel.COM.')}, set())
+check("D6 case-insensitive ground truth and alarms", o6[0][0]['tp'] == 1 and o6[2] == 1, "mixed-case query vs mixed-case config: tp=%d tunnel_lines=%d" % (o6[0][0]['tp'], o6[2]))
 check("D5 peacetime skips events without qname", d5, "event without qname skipped, valid event processed")
 
 check("D3 broken aggregator module removed", not os.path.exists(os.path.join(ROOT, "detection", "detector_base", "aggregator.py")),

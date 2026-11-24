@@ -19,6 +19,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from detection.evaluate import load_detectors, run_peacetime, run_wartime, generate_allowlists, save_results, load_global_allowlist, wartime_stop_event, peacetime_stop_event, peacetime_done, cfg_safe_get, format_duration
 from detection.detector_base.readfile import readjson, log_end_offset
+from detection.detector_base.feature_extraction import normalize_domain
 from config.dns_config_generator import generate_all_configs
 
 CONFIG_PATH = PROJECT_ROOT / "config.yaml"
@@ -1215,7 +1216,7 @@ def run_wartime_phase(
             logger.info(f"\n[+] --- Running DNSExfiltrator configuration: {config_name} ({config_idx + 1}/{len(dnsexfil_configs)}) ---")
             
             # Use config domains as tunneling domains for this run
-            config_tunneling_domains_set = set(domains) if domains else tunneling_domains_set
+            config_tunneling_domains_set = {normalize_domain(d) for d in domains} if domains else tunneling_domains_set
             
             # Update domain file for this configuration (single file)
             domains_file = server_volume_dir / "domains.txt"
@@ -1601,7 +1602,7 @@ def main():
             dnsexfil_configs
         ) = run_setup(cfg)
         
-        tunneling_domains_set = set(tunneling_domains)
+        tunneling_domains_set = {normalize_domain(d) for d in tunneling_domains}
         
         # Create log generator
         log_generator = readjson(str(LOGFILE), start_offset=log_end_offset(LOGFILE))

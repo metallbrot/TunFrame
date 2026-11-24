@@ -134,7 +134,6 @@ def _run_peacetime(detectors: list, log_generator, tunneling_domains: set) -> tu
         
         peace_logcount += 1
         
-        domain = domain.lower()
         if domain and domain not in alldomains:
             alldomains.add(domain)
 
@@ -195,7 +194,6 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
             logger.debug(f"[!] Invalid FQDN detected: {get_fqdn(logline)}")
             continue
 
-        domain = domain.lower()
 
         if domain and domain not in alldomains:
             alldomains.add(domain)
