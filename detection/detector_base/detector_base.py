@@ -15,6 +15,7 @@ class Detector(ABC):
         self.total_process_time = 0.0
         self.processed_lines = 0
         self.tunneling_missed = 0
+        self.tunneling_missed_responses = 0
         self.lv_up = 0
         self.lv_down = 0
         self.allowlist = set()
@@ -30,6 +31,7 @@ class Detector(ABC):
         self.total_process_time = 0.0
         self.processed_lines = 0
         self.tunneling_missed = 0
+        self.tunneling_missed_responses = 0
         self.lv_up = 0
         self.lv_down = 0
         self.allowlist = set()
@@ -41,6 +43,7 @@ class Detector(ABC):
         self.total_process_time = 0.0
         self.processed_lines = 0
         self.tunneling_missed = 0
+        self.tunneling_missed_responses = 0
         self.lv_up = 0
         self.lv_down = 0
         self.alarms = set()
@@ -60,11 +63,12 @@ class Detector(ABC):
             timediff = time.time() - start
             
             if istunnel and domain not in self.alarms:
-                self.tunneling_missed += 1
                 if is_response(logline):
+                    self.tunneling_missed_responses += 1
                     # Downlink leakage: RDATA volume of the answer records.
                     self.lv_down += answer_payload_bytes(logline)
                 else:
+                    self.tunneling_missed += 1
                     # Uplink leakage: full encoded payload of the query name.
                     self.lv_up += query_payload_bytes(logline)
             self.total_process_time += timediff
@@ -80,7 +84,7 @@ class Detector(ABC):
                 # Non-tunneling domain (false positive) - red
                 logger.info(f"\n{self.__class__.__name__}: Added \033[91m{domain}\033[0m to alarms")
 
-    def evaluate(self, tunneling_domains: set, all_domains: set, total_loglines: int, tunneling_loglines: int, global_allowlist: set) -> dict:
+    def evaluate(self, tunneling_domains: set, all_domains: set, total_loglines: int, tunneling_queries: int, global_allowlist: set, tunneling_responses: int = 0) -> dict:
         """Compute domain-level detection metrics for the finished phase.
 
         Every registered domain in ``all_domains`` falls into exactly one of the
@@ -94,10 +98,12 @@ class Detector(ABC):
         Args:
             tunneling_domains: Tunneling domains actually seen in this phase.
             all_domains: Registered domains seen in this phase.
-            total_loglines: Number of log lines processed in this phase.
-            tunneling_loglines: Number of tunneling log lines in this phase.
+            total_loglines: Number of log lines (queries and responses)
+                processed in this phase.
+            tunneling_queries: Number of tunneling query lines in this phase.
             global_allowlist: Global allowlist, used to report the
                 detector-specific part of the allowlist.
+            tunneling_responses: Number of tunneling response lines.
 
         Returns:
             dict: Metrics, confusion-matrix counts and accounting counters.
@@ -108,6 +114,7 @@ class Detector(ABC):
         alarms = self.alarms.difference(self.allowlist)
         logger.info(f"num alarms: {len(alarms)}")
         
+        tunneling_loglines = tunneling_queries + tunneling_responses
         if tunneling_loglines == 0:
             tunneling_domains = set()
         
@@ -128,8 +135,8 @@ class Detector(ABC):
         logger.info(f"Processed loglines: {self.processed_lines}/{total_loglines}")
         
         logger.info(f"\n--- Detection Metrics ---")
-        logger.info(f"Total tunnel queries seen: {tunneling_loglines}")
-        logger.info(f"Tunnel queries missed: {self.tunneling_missed}")
+        logger.info(f"Total tunnel queries seen: {tunneling_queries} (responses: {tunneling_responses})")
+        logger.info(f"Tunnel queries missed: {self.tunneling_missed} (responses: {self.tunneling_missed_responses})")
         logger.info(f"Traffic volume down: {format_bytes(self.lv_down)}, Traffic volume up: {format_bytes(self.lv_up)}")
         logger.info(f"Estimated real traffic volume up: {format_bytes(self.lv_up / expansion_factor)}")
         
@@ -184,7 +191,10 @@ class Detector(ABC):
             
             # Tunneling-specific metrics
             "tunneling_loglines": tunneling_loglines,
+            "tunneling_queries": tunneling_queries,
+            "tunneling_responses": tunneling_responses,
             "tunneling_missed": self.tunneling_missed,
+            "tunneling_missed_responses": self.tunneling_missed_responses,
             "traffic_volume_up_bytes": self.lv_up,
             "traffic_volume_down_bytes": self.lv_down,
             "estimated_real_traffic_up_bytes": self.lv_up / expansion_factor,

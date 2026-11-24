@@ -105,14 +105,18 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
         global_allowlist: Global allowlist (reported per detector).
 
     Returns:
-        tuple: (results, logcount, tunnel_count, seen_tunnels, alldomains), where
-        ``alldomains`` is the set of registered domains seen in this window.
+        tuple: (results, logcount, tunnel_count, seen_tunnels, alldomains, counts).
+        ``logcount`` and ``tunnel_count`` count log lines (queries and
+        responses). ``alldomains`` is the set of registered domains seen in
+        this window. ``counts`` splits lines into ``total_queries``,
+        ``total_responses``, ``tunnel_queries`` and ``tunnel_responses``.
     """
     alldomains = set()
     tunneling_domains_seen = {domain: False for domain in tunneling_domains}
     
     logcount = 0
     tunnel_count = 0
+    counts = {"total_queries": 0, "total_responses": 0, "tunnel_queries": 0, "tunnel_responses": 0}
     
     wartime_stop_event.clear()
     
@@ -147,11 +151,14 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
         
         istunnel = False
         logcount += 1
+        response = is_response(logline)
+        counts["total_responses" if response else "total_queries"] += 1
         
         if domain in tunneling_domains:
             tunneling_domains_seen[domain] = True
             istunnel = True
             tunnel_count += 1
+            counts["tunnel_responses" if response else "tunnel_queries"] += 1
             logger.debug(f"[!] Tunneling seen...({domain})")
         
         for detector in detectors:
@@ -173,10 +180,13 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
     results = []
     for detector in detectors:
         logger.info(f"\n=== Evaluation of {type(detector).__name__} ===")
-        results.append(detector.evaluate(seen_tunnels, alldomains, logcount, tunnel_count, global_allowlist))
+        results.append(detector.evaluate(
+            seen_tunnels, alldomains, logcount, counts["tunnel_queries"], global_allowlist,
+            tunneling_responses=counts["tunnel_responses"],
+        ))
         logger.info("")
     
-    return results, logcount, tunnel_count, seen_tunnels, alldomains
+    return results, logcount, tunnel_count, seen_tunnels, alldomains, counts
 
 
 def cfg_safe_get(cfg: dict, path: list[str], default: any = None) -> any:

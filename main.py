@@ -321,10 +321,18 @@ def build_and_save_metadata(
     tunneling_pps,
     server_ip: str,
     public_resolver: str,
-    cfg: dict
+    cfg: dict,
+    counts: dict = None
 ):
-    """Build metadata and save results to file."""
-    tunnel_percentage = (tunnel_count / logcount * 100) if logcount > 0 else 0
+    """Build metadata and save results to file.
+
+    ``tunnel_percentage`` is the share of tunneling queries among all queries;
+    responses are counted separately in ``counts``.
+    """
+    counts = counts or {}
+    total_queries = counts.get("total_queries", 0)
+    tunnel_queries = counts.get("tunnel_queries", 0)
+    tunnel_percentage = (tunnel_queries / total_queries * 100) if total_queries > 0 else 0
     
     benign_enabled = bool(cfg_safe_get(cfg, ["traffic", "benign", "enabled"], False))
     benign_pcap = cfg_safe_get(cfg, ["traffic", "benign", "pcap"], "")
@@ -368,6 +376,10 @@ def build_and_save_metadata(
         "dataset_statistics": {
             "total_loglines": logcount,
             "tunnel_loglines": tunnel_count,
+            "total_queries": total_queries,
+            "total_responses": counts.get("total_responses", 0),
+            "tunnel_queries": tunnel_queries,
+            "tunnel_responses": counts.get("tunnel_responses", 0),
             "tunnel_percentage": tunnel_percentage,
             "unique_domains": len(alldomains),
             "logfile": str(LOGFILE)
@@ -1165,7 +1177,7 @@ def run_wartime_phase(
             logger.info(f"[+] Wartime started for config {config_name}: Running for {format_duration(wartime_duration)}...")
             
             # Run wartime detection for this specific configuration with clean state
-            results, logcount, tunnel_count, seen_tunnels, config_alldomains = run_wartime(
+            results, logcount, tunnel_count, seen_tunnels, config_alldomains, counts = run_wartime(
                 active_detectors, config_log_generator, config_tunneling_domains_set, global_allowlist
             )
             
@@ -1205,7 +1217,8 @@ def run_wartime_phase(
                 tunneling_pps=tunneling_pps,
                 server_ip=server_ip,
                 public_resolver=public_resolver,
-                cfg=cfg
+                cfg=cfg,
+                counts=counts
             )
             
             logger.info(f"[+] Completed configuration: {config_name}")
@@ -1242,7 +1255,7 @@ def run_wartime_phase(
         
         # Run wartime (will block until stop event is set or all tunnels detected).
         # The TN/FPR universe is the set of domains seen in this wartime only.
-        results, logcount, tunnel_count, seen_tunnels, alldomains = run_wartime(
+        results, logcount, tunnel_count, seen_tunnels, alldomains, counts = run_wartime(
             active_detectors, wartime_log_generator, tunneling_domains_set, global_allowlist
         )
         
@@ -1277,7 +1290,8 @@ def run_wartime_phase(
             tunneling_pps=tunneling_pps,
             server_ip=server_ip,
             public_resolver=public_resolver,
-            cfg=cfg
+            cfg=cfg,
+            counts=counts
         )
     
     return alldomains, all_results

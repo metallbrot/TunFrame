@@ -55,6 +55,16 @@ d.process_line(resp('abc.tunnel.com', [{"rdatatype": "TXT", "rdata": "hello"}]),
 check("M4 downlink from answer records", (a, d.lv_down - a) == (20, 5),
       "A+AAAA answer=%d bytes (expected 20); empty + TXT 'hello'=%d bytes (expected 5)" % (a, d.lv_down - a))
 
+d = Never()
+lines = [evt('aa.tunnel.com'), resp('aa.tunnel.com', [{"rdatatype": "A", "rdata": "1.2.3.4"}]),
+         evt('bb.tunnel.com'), resp('bb.tunnel.com', []), evt('x.org')]
+ev.wartime_stop_event.clear()
+out = ev.run_wartime([d], gen(lines), {'tunnel.com'}, set())
+c, r5 = out[5], out[0][0]
+check("M5 tunnel counts are queries", (c['tunnel_queries'], c['tunnel_responses'], r5['tunneling_missed'], r5['tunneling_missed_responses']) == (2, 2, 2, 2),
+      "tunnel_queries=%d tunnel_responses=%d missed=%d missed_responses=%d (expected 2 each)" % (
+      c['tunnel_queries'], c['tunnel_responses'], r5['tunneling_missed'], r5['tunneling_missed_responses']))
+
 dets = [FlagTunnel()]
 cfg1 = [evt('x%d.tunnel.com' % i) for i in range(5)] + [evt('a.com')]
 ev.wartime_stop_event.clear()

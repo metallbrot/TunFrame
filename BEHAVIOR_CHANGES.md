@@ -54,3 +54,21 @@ Entries are added in the commit that introduces the change.
   length octets. Responses without answers add 0 bytes.
 - **Affected outputs**: `traffic_volume_down_bytes` (DLV in the thesis). For
   single-answer A responses the value is unchanged.
+
+## M5: Tunnel and missed counts refer to queries
+
+- **Old**: `tunneling_missed`, the count passed as "tunnel queries", and the
+  console lines "Total tunnel queries seen" / "Tunnel queries missed" counted
+  query and response lines alike (about twice the real query count).
+  `tunnel_percentage` was tunnel lines divided by all lines.
+- **New**:
+  - `tunneling_missed` counts missed tunneling queries only; missed responses
+    are in the new `tunneling_missed_responses`.
+  - Results add `tunneling_queries` and `tunneling_responses`;
+    `tunneling_loglines` keeps its meaning (all tunneling lines).
+  - `dataset_statistics` adds `total_queries`, `total_responses`,
+    `tunnel_queries`, `tunnel_responses`; `total_loglines` and
+    `tunnel_loglines` keep counting lines.
+  - `tunnel_percentage` = tunnel queries / all queries × 100.
+  - `run_wartime()` returns a sixth element with these counts.
+- **Affected outputs**: `tunneling_missed`, `tunnel_percentage`, console text.
