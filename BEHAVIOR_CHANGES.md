@@ -331,3 +331,16 @@ Entries are added in the commit that introduces the change.
 - **New**: The value is rounded to whole seconds first (`1m4s`, `1m`, `2h`).
 - **Affected outputs**: `metadata.experiment.wartime_duration`,
   `peacetime_duration`, `actual_runtime` strings and console output.
+
+## D4: One reset API in the detector base class
+
+- **Old**: `Detector.full_reset()` and `Detector.phase_reset()` duplicated the
+  same field list (no shadowing, as the audit claim had it); the removed
+  legacy `evaluate()` called a nonexistent `reset()`.
+- **New**: `Detector.reset(clear_allowlist=False, reset_state=True)` is the
+  single implementation; `__init__` uses it too. Callers:
+  `generate_allowlists()` → `reset(clear_allowlist=True, reset_state=False)`
+  (same effect as the old `full_reset()`), config boundaries in `main.py` →
+  `reset()` (same effect as the old `phase_reset()` from M7).
+- **Affected outputs**: none. API change: detectors calling `full_reset()` or
+  `phase_reset()` must call `reset()` (no local detector does).

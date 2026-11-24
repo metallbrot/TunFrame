@@ -80,7 +80,7 @@ def generate_allowlists(detectors: list, global_allowlist: set, peace_logcount: 
         detector_name = type(detector).__name__
         # Get allowlist from detector's alarms (from peacetime)
         local_allowlist = detector.alarms
-        detector.full_reset()
+        detector.reset(clear_allowlist=True, reset_state=False)
         detector.allowlist = local_allowlist.union(global_allowlist)
         logger.info(f"[+] {detector_name} allowlist size: {len(detector.allowlist)}")
 

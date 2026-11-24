@@ -1444,7 +1444,7 @@ def run_wartime_phase(
             # counters, runtime and leakage of earlier configs must not carry
             # over (the allowlist from peacetime is kept).
             for detector in active_detectors:
-                detector.phase_reset()
+                detector.reset()
 
             # Reset wartime event and run detection for this configuration
             wartime_stop_event.clear()

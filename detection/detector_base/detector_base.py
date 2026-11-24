@@ -9,60 +9,43 @@ from detection.detector_base.feature_extraction import get_registered_domain, is
 logger = logging.getLogger('dns_detector')
 
 class Detector(ABC):
+    """Base class for detectors evaluated by TunFrame.
+
+    Subclasses implement ``detect()`` and add registered domains to
+    ``self.alarms``. They may override ``on_phase_reset()`` to clear internal
+    state between DNSExfiltrator configurations.
+    """
+
     def __init__(self):
-        self.start_time = None
-        self.first_alarm_time = None
-        self.total_process_time = 0.0
-        self.processed_lines = 0
-        self.detect_calls = 0
-        self.tunneling_missed = 0
-        self.tunneling_missed_responses = 0
-        self.lv_up = 0
-        self.lv_down = 0
-        self.allowlisted_tunnel_lines = 0
-        self.allowlisted_tunnel_queries = 0
-        self.allowlisted_tunnel_responses = 0
-        self.allowlisted_tunnel_lv_up = 0
-        self.allowlisted_tunnel_lv_down = 0
         self.allowlist = set()
-        self.alarms = set()
+        self.reset(clear_allowlist=True, reset_state=False)
 
     @abstractmethod
     def detect(self, logline: dict):
         pass
 
-    def full_reset(self):
-        self.start_time = None
-        self.first_alarm_time = None
-        self.total_process_time = 0.0
-        self.processed_lines = 0
-        self.detect_calls = 0
-        self.tunneling_missed = 0
-        self.tunneling_missed_responses = 0
-        self.lv_up = 0
-        self.lv_down = 0
-        self.allowlisted_tunnel_lines = 0
-        self.allowlisted_tunnel_queries = 0
-        self.allowlisted_tunnel_responses = 0
-        self.allowlisted_tunnel_lv_up = 0
-        self.allowlisted_tunnel_lv_down = 0
-        self.allowlist = set()
-        self.alarms = set()
-
     def on_phase_reset(self):
-        """Hook for detector-specific state, called by ``phase_reset()``.
+        """Hook for detector-specific state, called by ``reset()``.
 
         Override in a detector to clear internal state (windows, trackers,
         sketches) that must not carry over between DNSExfiltrator configs.
         The default does nothing.
         """
 
-    def phase_reset(self):
-        """Reset alarms, counters, runtime and leakage, but keep the allowlist.
+    def reset(self, clear_allowlist: bool = False, reset_state: bool = True):
+        """Reset alarms, counters, runtime and leakage.
 
-        Called at every DNSExfiltrator config boundary so that no result of a
-        previous config carries over. Detector-specific state is cleared via
-        ``on_phase_reset()``.
+        This is the single reset API of the base class.
+
+        * At every DNSExfiltrator config boundary ``main.py`` calls ``reset()``:
+          the allowlist is kept and ``on_phase_reset()`` clears detector state.
+        * After peacetime ``generate_allowlists()`` calls
+          ``reset(clear_allowlist=True, reset_state=False)`` and then assigns
+          the new allowlist; state learned in peacetime is kept.
+
+        Args:
+            clear_allowlist: Also clear the allowlist.
+            reset_state: Call ``on_phase_reset()`` for detector-specific state.
         """
         self.start_time = None
         self.first_alarm_time = None
@@ -79,8 +62,10 @@ class Detector(ABC):
         self.allowlisted_tunnel_lv_up = 0
         self.allowlisted_tunnel_lv_down = 0
         self.alarms = set()
-        self.on_phase_reset()
-
+        if clear_allowlist:
+            self.allowlist = set()
+        if reset_state:
+            self.on_phase_reset()
 
     def process_line(self, logline: dict, istunnel: bool):
         if self.start_time is None:

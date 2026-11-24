@@ -131,14 +131,14 @@ ev.wartime_stop_event.clear()
 res1 = ev.run_wartime(dets, gen(cfg1), {'tunnel.com'}, set())
 cfg2 = [evt('benign%d.org' % i) for i in range(3)] + [evt('y%d.tunnel.com' % i) for i in range(5)]
 for x in dets:
-    x.phase_reset()          # what main.py now does at every config boundary
+    x.reset()                # what main.py now does at every config boundary
 ev.wartime_stop_event.clear()
 res2 = ev.run_wartime(dets, gen(cfg2), {'tunnel.com'}, set())
 check("M7 no carry-over between configs", (res2[1], res2[0][0]['processed_lines'], res2[0][0]['tp'], res2[0][0]['fp']) == (4, 4, 1, 0),
       "config2 logcount=%d processed_lines=%d tp=%d fp=%d (expected 4, 4, 1, 0)" % (
       res2[1], res2[0][0]['processed_lines'], res2[0][0]['tp'], res2[0][0]['fp']))
 main_src = open(os.path.join(ROOT, "main.py")).read()
-check("M7 main resets detectors per config", "detector.phase_reset()" in main_src, "phase_reset() call present in main.py")
+check("M7 main resets detectors per config", "detector.reset()" in main_src, "reset() call present in main.py")
 
 ev.peacetime_done.clear()
 ev.peacetime_stop_event.clear()
@@ -245,6 +245,10 @@ check("C8 renamed keys rejected, output.logdir used", c8 and c8_dir, "timing.dur
 import subprocess as _sp
 _out = _sp.run([sys.executable, "-c", "import sys; sys.path.insert(0, %r); import detection.detectors.MarkAll.detector; print('main' in sys.modules)" % ROOT],
                capture_output=True, text=True).stdout.strip()
+d4 = Never(); d4.allowlist = {'keep.com'}; d4.alarms = {'x.com'}; d4.lv_up = 5
+d4.reset()
+check("D4 single reset API", not hasattr(d4, 'full_reset') and not hasattr(d4, 'phase_reset') and d4.allowlist == {'keep.com'} and not d4.alarms and d4.lv_up == 0,
+      "reset() keeps allowlist, clears alarms/leakage; old reset names removed")
 check("D2 detectors do not import main", _out == "False", "'main' imported when loading a detector: %s" % _out)
 
 import tldextract
