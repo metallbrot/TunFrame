@@ -242,6 +242,11 @@ except ValueError:
 c8_dir = main.resolve_results_dir({'output': {'logdir': './results/'}}) == (main.CONFIG_PATH.parent / 'results').resolve()
 check("C8 renamed keys rejected, output.logdir used", c8 and c8_dir, "timing.duration rejected=%s, logdir resolved=%s" % (c8, c8_dir))
 
+import subprocess as _sp
+_out = _sp.run([sys.executable, "-c", "import sys; sys.path.insert(0, %r); import detection.detectors.MarkAll.detector; print('main' in sys.modules)" % ROOT],
+               capture_output=True, text=True).stdout.strip()
+check("D2 detectors do not import main", _out == "False", "'main' imported when loading a detector: %s" % _out)
+
 import tldextract
 try:
     tldextract.extract(None); print("8) tldextract.extract(None) did not raise")

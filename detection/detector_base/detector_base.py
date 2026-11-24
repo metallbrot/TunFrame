@@ -3,7 +3,7 @@ import logging
 from abc import ABC, abstractmethod
 from detection.detector_base.metrics import true_positive_rate, false_positive_rate
 from detection.detector_base.feature_extraction import get_registered_domain, is_response, format_bytes, query_payload_bytes, answer_payload_bytes
-from main import CONFIG_PATH, load_config, cfg_safe_get
+
 
 # Get the logger configured in main.py
 logger = logging.getLogger('dns_detector')
