@@ -227,6 +227,12 @@ src_w = open(os.path.join(ROOT, "main.py")).read()
 war_part = src_w[src_w.index("def run_wartime_phase("):]
 check("C6 wildcard replay in wartime", 'start_replay("wildcard"' in war_part, "run_wartime_phase starts or continues the wildcard replay")
 
+_d7 = tempfile.mkdtemp()
+with open(os.path.join(_d7, 'top.csv'), 'w') as f:
+    f.write("1,Google.com\n2,example.org.\n# comment\n\n0.0.0.0 ads.example.net\nplain.de\n")
+al = ev.load_global_allowlist('top.csv', base_dir=_d7)
+check("C7 allowlist parsing and path", al == {'google.com', 'example.org', 'ads.example.net', 'plain.de'}, "parsed %s" % sorted(al))
+
 import tldextract
 try:
     tldextract.extract(None); print("8) tldextract.extract(None) did not raise")

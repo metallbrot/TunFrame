@@ -804,7 +804,7 @@ def run_peacetime_phase(
     detector_classes = load_detectors(DETECTOR_PATH, active_detectors_list)
     active_detectors = [cls() for cls in detector_classes]
     logger.info(f"\n{len(active_detectors)} detectors loaded: {[type(d).__name__ for d in active_detectors]}\n")
-    global_allowlist = load_global_allowlist(global_allowlist_path)
+    global_allowlist = load_global_allowlist(global_allowlist_path, base_dir=CONFIG_PATH.parent)
     
     log_generator_iter = log_generator
     start_timestamp = datetime.now()

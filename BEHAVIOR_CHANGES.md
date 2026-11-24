@@ -280,3 +280,17 @@ Entries are added in the commit that introduces the change.
   during wartime.
 - **Affected outputs**: wartime benign-side metrics (FP, TN, FPR) of runs with
   `traffic.wildcard.enabled: true`.
+
+## C7: Global allowlist parsing and path resolution
+
+- **Old**: Every raw line of the file was an allowlist entry: no splitting, no
+  lowercasing, no whitespace or comment handling. A raw Tranco CSV
+  (`rank,domain`) matched nothing. The path was resolved against the working
+  directory.
+- **New**: `load_global_allowlist(path, base_dir)` resolves relative paths
+  against the directory of `config.yaml`, raises `FileNotFoundError` for a
+  missing file, and parses one domain per line, CSV (last domain-like column,
+  e.g. Tranco `rank,domain`), tab/space-separated columns and `#` comments.
+  Entries are lowercased without a trailing dot.
+- **Affected outputs**: allowlist content (and thus FP/TN/FPR) whenever the
+  file was not already a clean, lowercase, one-domain-per-line list.

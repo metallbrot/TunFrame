@@ -1,4 +1,5 @@
 import os
+import re
 import importlib
 import inspect
 import threading
@@ -12,12 +13,53 @@ import json
 logger = logging.getLogger('dns_detector')
 
 
-def load_global_allowlist(allowlist_path: str) -> set:
-    """Load global allowlist from file."""
+def parse_allowlist_line(line: str) -> str:
+    """Extract the domain from one allowlist line, or return '' if there is none.
+
+    Supported formats: one domain per line, CSV such as Tranco's
+    ``rank,domain``, tab- or space-separated columns (hosts-file style), and
+    ``#`` comments. The last column that looks like a domain is used. Domains
+    are lowercased and a trailing dot is removed.
+    """
+    line = line.split('#', 1)[0].strip()
+    if not line:
+        return ''
+    fields = [f.strip().strip('"\'') for f in re.split(r'[,;\t ]+', line) if f.strip()]
+    for field in reversed(fields):
+        if '.' in field and not field.replace('.', '').isdigit():
+            return field.rstrip('.').lower()
+    return ''
+
+
+def load_global_allowlist(allowlist_path: str, base_dir=None) -> set:
+    """Load the global allowlist.
+
+    Args:
+        allowlist_path: Path to the allowlist file. Empty means no allowlist.
+            A relative path is resolved against ``base_dir``.
+        base_dir: Directory of the configuration file; relative paths are
+            resolved against it instead of the working directory.
+
+    Returns:
+        set: Lowercased registered domains.
+
+    Raises:
+        FileNotFoundError: If the configured file does not exist.
+    """
     global_allowlist = set()
-    if allowlist_path:
-        with open(allowlist_path, 'r') as file:
-            global_allowlist.update(file.read().splitlines())
+    if not allowlist_path:
+        return global_allowlist
+    path = allowlist_path
+    if base_dir is not None and not os.path.isabs(path):
+        path = os.path.join(str(base_dir), path)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Global allowlist not found: {path}")
+    with open(path, 'r', encoding='utf-8', errors='replace') as file:
+        for line in file:
+            domain = parse_allowlist_line(line)
+            if domain:
+                global_allowlist.add(domain)
+    logger.info(f"[+] Global allowlist: {len(global_allowlist)} domains from {path}")
     return global_allowlist
 
 
