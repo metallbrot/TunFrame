@@ -14,6 +14,7 @@ class Detector(ABC):
         self.first_alarm_time = None
         self.total_process_time = 0.0
         self.processed_lines = 0
+        self.detect_calls = 0
         self.tunneling_missed = 0
         self.tunneling_missed_responses = 0
         self.lv_up = 0
@@ -30,6 +31,7 @@ class Detector(ABC):
         self.first_alarm_time = None
         self.total_process_time = 0.0
         self.processed_lines = 0
+        self.detect_calls = 0
         self.tunneling_missed = 0
         self.tunneling_missed_responses = 0
         self.lv_up = 0
@@ -42,6 +44,7 @@ class Detector(ABC):
         self.first_alarm_time = None
         self.total_process_time = 0.0
         self.processed_lines = 0
+        self.detect_calls = 0
         self.tunneling_missed = 0
         self.tunneling_missed_responses = 0
         self.lv_up = 0
@@ -61,6 +64,7 @@ class Detector(ABC):
             start = time.time()
             self.detect(logline)
             timediff = time.time() - start
+            self.detect_calls += 1
             
             if istunnel and domain not in self.alarms:
                 if is_response(logline):
@@ -127,12 +131,14 @@ class Detector(ABC):
         fpr = false_positive_rate(len(fp), len(tn))
         
         runtime = self.total_process_time
-        avg_process_time = self.total_process_time / self.processed_lines if self.processed_lines > 0 else 0.0
+        # Average over the lines that actually reached detect(); allowlisted
+        # lines are skipped before detect() and must not dilute the average.
+        avg_process_time = self.total_process_time / self.detect_calls if self.detect_calls > 0 else 0.0
         
         logger.info("\n--- Performance Metrics ---")
         logger.info(f"Total runtime: {runtime:.3f}s")
         logger.info(f"Avg processing time per logline: {avg_process_time*1000:.3f} ms")
-        logger.info(f"Processed loglines: {self.processed_lines}/{total_loglines}")
+        logger.info(f"Processed loglines: {self.processed_lines}/{total_loglines} (reached detect(): {self.detect_calls})")
         
         logger.info(f"\n--- Detection Metrics ---")
         logger.info(f"Total tunnel queries seen: {tunneling_queries} (responses: {tunneling_responses})")
@@ -187,6 +193,7 @@ class Detector(ABC):
             "runtime": runtime,
             "avg_process_time_ms": avg_process_time * 1000,
             "processed_lines": self.processed_lines,
+            "detect_calls": self.detect_calls,
             "total_loglines": total_loglines,
             
             # Tunneling-specific metrics

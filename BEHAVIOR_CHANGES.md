@@ -72,3 +72,13 @@ Entries are added in the commit that introduces the change.
   - `tunnel_percentage` = tunnel queries / all queries × 100.
   - `run_wartime()` returns a sixth element with these counts.
 - **Affected outputs**: `tunneling_missed`, `tunnel_percentage`, console text.
+
+## M6: Average processing time per detect() call
+
+- **Old**: `avg_process_time_ms` = time spent in `detect()` divided by all
+  processed lines, including allowlisted lines that never reached `detect()`.
+- **New**: `avg_process_time_ms` = time spent in `detect()` divided by the new
+  counter `detect_calls` (lines that reached `detect()`). `processed_lines` is
+  unchanged.
+- **Affected outputs**: `avg_process_time_ms` (higher whenever allowlists are
+  in use); new key `detect_calls`.

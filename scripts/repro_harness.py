@@ -65,6 +65,13 @@ check("M5 tunnel counts are queries", (c['tunnel_queries'], c['tunnel_responses'
       "tunnel_queries=%d tunnel_responses=%d missed=%d missed_responses=%d (expected 2 each)" % (
       c['tunnel_queries'], c['tunnel_responses'], r5['tunneling_missed'], r5['tunneling_missed_responses']))
 
+d = Never(); d.allowlist = {'allowed.com'}
+for q in ['a.allowed.com', 'b.allowed.com', 'c.allowed.com', 'x.other.org']:
+    d.process_line(evt(q), False)
+r6 = d.evaluate(set(), {'allowed.com', 'other.org'}, 4, 0, set())
+check("M6 avg time over detect() calls", d.detect_calls == 1 and abs(r6['avg_process_time_ms'] - d.total_process_time * 1000) < 1e-9,
+      "detect_calls=%d of %d lines (expected 1)" % (d.detect_calls, d.processed_lines))
+
 dets = [FlagTunnel()]
 cfg1 = [evt('x%d.tunnel.com' % i) for i in range(5)] + [evt('a.com')]
 ev.wartime_stop_event.clear()
