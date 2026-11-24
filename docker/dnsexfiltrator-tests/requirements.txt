@@ -1,0 +1,11 @@
+# Phase C: Differential Contract Tests Requirements
+# Dependencies for running the test suite
+
+# For base32/base64 encoding
+base64
+
+# For DNS record parsing (used by server)
+dnslib>=0.9.0
+
+# For testing
+unittest2
