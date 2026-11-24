@@ -77,10 +77,15 @@ cfg1 = [evt('x%d.tunnel.com' % i) for i in range(5)] + [evt('a.com')]
 ev.wartime_stop_event.clear()
 res1 = ev.run_wartime(dets, gen(cfg1), {'tunnel.com'}, set())
 cfg2 = [evt('benign%d.org' % i) for i in range(3)] + [evt('y%d.tunnel.com' % i) for i in range(5)]
+for x in dets:
+    x.phase_reset()          # what main.py now does at every config boundary
 ev.wartime_stop_event.clear()
 res2 = ev.run_wartime(dets, gen(cfg2), {'tunnel.com'}, set())
-print("4) config1 logcount=%d, config2 logcount=%d of %d lines (stopped early), config2 processed_lines=%d, config2 tp=%d with no tunnel line read" % (
-      res1[1], res2[1], len(cfg2), res2[0][0]['processed_lines'], res2[0][0]['tp']))
+check("M7 no carry-over between configs", (res2[1], res2[0][0]['processed_lines'], res2[0][0]['tp'], res2[0][0]['fp']) == (4, 4, 1, 0),
+      "config2 logcount=%d processed_lines=%d tp=%d fp=%d (expected 4, 4, 1, 0)" % (
+      res2[1], res2[0][0]['processed_lines'], res2[0][0]['tp'], res2[0][0]['fp']))
+main_src = open(os.path.join(ROOT, "main.py")).read()
+check("M7 main resets detectors per config", "detector.phase_reset()" in main_src, "phase_reset() call present in main.py")
 
 det = [Never()]
 peace = [evt('peace%d.net' % i) for i in range(20)]

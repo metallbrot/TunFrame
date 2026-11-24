@@ -82,3 +82,19 @@ Entries are added in the commit that introduces the change.
   unchanged.
 - **Affected outputs**: `avg_process_time_ms` (higher whenever allowlists are
   in use); new key `detect_calls`.
+
+## M7: Detectors are reset at every DNSExfiltrator config boundary
+
+- **Old**: The same detector instances ran all configs without a reset.
+  Alarms, `processed_lines`, runtime, missed counts and leakage accumulated.
+  Once every detector had flagged the tunnel domain, every later config
+  stopped after its first log line, and the carried-over alarm was scored as
+  a false positive when no tunnel line had been read.
+- **New**: Before each config, `main.py` calls `phase_reset()` on every
+  detector. It clears alarms, counters, runtime and leakage and keeps the
+  peacetime allowlist. Detectors can clear internal state (windows, trackers)
+  by overriding the new `on_phase_reset()` hook; the default does nothing.
+- **Affected outputs**: every per-config results file after the first config
+  of a run.
+- **Caveat**: detectors that do not override `on_phase_reset()` still carry
+  their internal state across configs.

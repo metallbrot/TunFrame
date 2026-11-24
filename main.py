@@ -1170,6 +1170,12 @@ def run_wartime_phase(
             
             logger.info(f"[+] Both DNSExfiltrator server and client are confirmed running")
             
+            # Start every configuration from a clean detector state: alarms,
+            # counters, runtime and leakage of earlier configs must not carry
+            # over (the allowlist from peacetime is kept).
+            for detector in active_detectors:
+                detector.phase_reset()
+
             # Reset wartime event and run detection for this configuration
             wartime_stop_event.clear()
             start_timer_event(wartime_stop_event, wartime_duration)

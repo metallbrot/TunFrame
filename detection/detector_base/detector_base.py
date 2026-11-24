@@ -39,7 +39,21 @@ class Detector(ABC):
         self.allowlist = set()
         self.alarms = set()
 
+    def on_phase_reset(self):
+        """Hook for detector-specific state, called by ``phase_reset()``.
+
+        Override in a detector to clear internal state (windows, trackers,
+        sketches) that must not carry over between DNSExfiltrator configs.
+        The default does nothing.
+        """
+
     def phase_reset(self):
+        """Reset alarms, counters, runtime and leakage, but keep the allowlist.
+
+        Called at every DNSExfiltrator config boundary so that no result of a
+        previous config carries over. Detector-specific state is cleared via
+        ``on_phase_reset()``.
+        """
         self.start_time = None
         self.first_alarm_time = None
         self.total_process_time = 0.0
@@ -50,6 +64,7 @@ class Detector(ABC):
         self.lv_up = 0
         self.lv_down = 0
         self.alarms = set()
+        self.on_phase_reset()
 
 
     def process_line(self, logline: dict, istunnel: bool):
