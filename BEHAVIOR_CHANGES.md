@@ -156,3 +156,17 @@ Entries are added in the commit that introduces the change.
   M3/M4. `tunneling_missed`, `traffic_volume_up_bytes` and
   `traffic_volume_down_bytes` keep covering inspected traffic only.
 - **Affected outputs**: new keys only; existing values unchanged.
+
+## M12: Stop event checked on every loop iteration
+
+- **Old**: `readjson(timeout_seconds=60, max_timeouts=2)` yielded nothing for
+  60 s on an idle log, so a phase could overrun its configured duration by up
+  to 60 s (a stored 30 s wartime ran 60 s). After two consecutive timeouts
+  (~120 s idle) the generator ended, and the phase stopped early with
+  "Log ended" regardless of its configured duration.
+- **New**: `readjson(log_file, poll_interval=0.05, max_idle_seconds=None)`
+  yields `None` after every idle poll, so the phase loops check their stop
+  event at least every 50 ms. The generator no longer ends on idle by
+  default; phases end through their timer or early stop only.
+- **Affected outputs**: phase duration and `actual_runtime`; slow-rate runs
+  without background traffic no longer end after two idle minutes.

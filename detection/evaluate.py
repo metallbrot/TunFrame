@@ -62,9 +62,8 @@ def run_peacetime(detectors: list, log_generator, tunneling_domains: set) -> tup
             logger.warning(f"\n⚠ Log ended after {peace_logcount} lines")
             break
         
-        # Handle timeout from generator
+        # Idle poll: the reader yields None so the stop event is re-checked.
         if logline is None:
-            time.sleep(0.01)
             continue
 
         domain = get_registered_domain(logline)
@@ -127,9 +126,8 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
             logger.warning(f"\n⚠ Log ended after {logcount} lines")
             break
 
-        # Handle timeout from generator
+        # Idle poll: the reader yields None so the stop event is re-checked.
         if logline is None:
-            time.sleep(0.001)
             continue
         if get_fqdn(logline) is None:
             continue

@@ -112,13 +112,24 @@ check("M2 wartime universe excludes peacetime domains", len(res[4]) == 4 and abs
 with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
     for i in range(3000): f.write(json.dumps(evt('q%d.example.com' % i)) + "\n")
     path = f.name
-g = readjson(path, timeout_seconds=60, max_timeouts=2)
+g = readjson(path)
 t0 = time.time(); n = 0
 while n < 3000:
     if next(g) is not None: n += 1
 rate = 3000 / max(time.time() - t0, 1e-9)
 check("M9 reader reads bursts", rate > 1000, "readjson delivered %.0f lines/s (expected > 1000)" % rate)
 os.unlink(path)
+
+with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
+    idle_path = f.name                                  # empty, idle log
+ev.wartime_stop_event.clear()
+t12 = main.PhaseTimer(ev.wartime_stop_event, 0.3).start()
+t0 = time.time()
+ev.run_wartime([Never()], readjson(idle_path), {'tunnel.com'}, set())
+t12.cancel()
+el = time.time() - t0
+check("M12 idle phase ends on time", 0.25 <= el <= 0.6, "idle wartime of 0.3 s ended after %.2f s" % el)
+os.unlink(idle_path)
 
 e = threading.Event()
 t1 = main.PhaseTimer(e, 0.3).start()      # config 1 timer

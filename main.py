@@ -1013,7 +1013,7 @@ def run_wartime_phase(
             # Reset state for this configuration - create fresh log generator
             config_alldomains = set()
             config_start_timestamp = datetime.now()
-            config_log_generator = readjson(str(LOGFILE), timeout_seconds=60, max_timeouts=2)
+            config_log_generator = readjson(str(LOGFILE))
             
             # Start server for this configuration
             logger.info(f"[+] Starting DNSExfiltrator server with {len(domains)} domains")
@@ -1291,7 +1291,7 @@ def run_wartime_phase(
         logger.info(f"[+] Wartime started: Running for {format_duration(wartime_duration)}...")
         
         # Create fresh generator for wartime (LOGFILE already cleared above)
-        wartime_log_generator = readjson(str(LOGFILE), timeout_seconds=60, max_timeouts=2)
+        wartime_log_generator = readjson(str(LOGFILE))
         
         wartime_stop_event.clear()
         war_timer = PhaseTimer(wartime_stop_event, wartime_duration).start()
@@ -1365,7 +1365,7 @@ def main():
         tunneling_domains_set = set(tunneling_domains)
         
         # Create log generator
-        log_generator = readjson(str(LOGFILE), timeout_seconds=60, max_timeouts=2)
+        log_generator = readjson(str(LOGFILE))
         
         # Run peacetime phase
         (
