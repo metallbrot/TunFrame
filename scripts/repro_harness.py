@@ -223,6 +223,10 @@ check("M10 benign replay started once", calls == ["benign"], "replay starts: %s 
 check("M10 peacetime replay only with peacetime", "    if peacetime_duration:\n        if benign_enabled:" in open(os.path.join(ROOT, "main.py")).read(),
       "peacetime phase starts replays only when peacetime_duration > 0")
 
+src_w = open(os.path.join(ROOT, "main.py")).read()
+war_part = src_w[src_w.index("def run_wartime_phase("):]
+check("C6 wildcard replay in wartime", 'start_replay("wildcard"' in war_part, "run_wartime_phase starts or continues the wildcard replay")
+
 import tldextract
 try:
     tldextract.extract(None); print("8) tldextract.extract(None) did not raise")

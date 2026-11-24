@@ -267,3 +267,16 @@ Entries are added in the commit that introduces the change.
   `ValueError` listing every offending config.
 - **Affected outputs**: none for valid configurations; invalid ones no longer
   start.
+
+## C6: Wildcard replay also runs during wartime (decision: option A)
+
+- **Old**: The wildcard pcap was replayed only from the peacetime phase. With
+  peacetime 0 it started anyway (see M10) and was never stopped; wartime never
+  started it, although the README says benign, wildcard and tunnel traffic run
+  together.
+- **New**: `run_wartime_phase()` starts the wildcard replay if it is enabled,
+  or continues the one started in peacetime (via `start_replay()`, never a
+  restart). Implementation and README now agree: all enabled sources run
+  during wartime.
+- **Affected outputs**: wartime benign-side metrics (FP, TN, FPR) of runs with
+  `traffic.wildcard.enabled: true`.

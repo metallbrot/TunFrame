@@ -979,6 +979,14 @@ def run_wartime_phase(
         # Continues the peacetime replay if one is running; never restarts it.
         if start_replay("benign", benign_pcap, benign_pps):
             logger.info(f"[+] Benign traffic replay started - running for {format_duration(wartime_duration)}...")
+
+    # Wildcard traffic runs alongside benign and tunnel traffic in wartime too
+    # (README: all three sources run together). A peacetime replay continues.
+    wildcard_enabled = bool(cfg_safe_get(cfg, ["traffic", "wildcard", "enabled"], False))
+    if wildcard_enabled:
+        if start_replay("wildcard", cfg_safe_get(cfg, ["traffic", "wildcard", "pcap"], ""),
+                        cfg_safe_get(cfg, ["traffic", "wildcard", "pps"])):
+            logger.info(f"[+] Wildcard traffic replay started - running for {format_duration(wartime_duration)}...")
         # Note: tcpreplay runs in background, no direct verification possible
 
     # Start tunnel traffic if enabled and DNSExfiltrator is not
