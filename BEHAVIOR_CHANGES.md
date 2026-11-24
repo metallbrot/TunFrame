@@ -182,3 +182,21 @@ Entries are added in the commit that introduces the change.
   nonexistent `reset()`) was removed.
 - **Affected outputs**: `actual_runtime`; wartime now starts right after
   peacetime.
+
+## M14: Log is read from offsets instead of being truncated
+
+- **Old**: Wartime and every DNSExfiltrator config truncated `dnslogs.json`
+  while DNS-collector kept it open without O_APPEND. The collector's next write
+  landed at its old offset, leaving a NUL-filled prefix (1.6 MB in the audited
+  log). The first event after each truncation was glued to the NULs and
+  dropped, and lines read before the collector finished writing them were
+  silently dropped as invalid JSON.
+- **New**: The log is truncated only at setup, while the collector is stopped.
+  Each phase records the end of the file (`readfile.log_end_offset()`) before
+  starting traffic and reads from that byte offset. `readjson()` keeps
+  incomplete lines until their newline arrives, skips a partial line at the
+  start offset, strips NUL padding, and reopens the file if it is truncated or
+  replaced.
+- **Affected outputs**: line counts (no events lost at phase starts or on
+  partial writes). Wartime in replay mode now begins with the events logged
+  after the wartime start offset instead of an emptied file.

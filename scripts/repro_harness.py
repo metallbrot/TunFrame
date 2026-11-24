@@ -137,6 +137,31 @@ el = time.time() - t0
 check("M12 idle phase ends on time", 0.25 <= el <= 0.6, "idle wartime of 0.3 s ended after %.2f s" % el)
 os.unlink(idle_path)
 
+from detection.detector_base.readfile import log_end_offset
+with tempfile.NamedTemporaryFile('wb', suffix='.json', delete=False) as f:
+    f.write((json.dumps(evt('old.example.com')) + "\n").encode())
+    p14 = f.name
+off = log_end_offset(p14)
+g = readjson(p14, start_offset=off)
+with open(p14, 'ab') as f:
+    f.write(b"\x00" * 64 + (json.dumps(evt('nul.example.com')) + "\n").encode())   # NUL-padded line
+    half = json.dumps(evt('split.example.com'))
+    f.write(half[:20].encode())                                               # partial line
+got = []
+for _ in range(5):
+    x = next(g)
+    if x: got.append(x['dns']['qname'])
+with open(p14, 'ab') as f:
+    f.write((half[20:] + "\n").encode())                                      # rest of the line
+for _ in range(5):
+    x = next(g)
+    if x: got.append(x['dns']['qname'])
+g2 = readjson(p14, start_offset=5)                                           # offset inside line 1
+first = next(x for x in g2 if x)['dns']['qname']
+check("M14 offset reading, NUL strip, partial lines", got == ['nul.example.com', 'split.example.com'] and first == 'nul.example.com',
+      "read %s; mid-line start resumes at %s" % (got, first))
+os.unlink(p14)
+
 e = threading.Event()
 t1 = main.PhaseTimer(e, 0.3).start()      # config 1 timer
 t1.cancel()                                # config 1 ended early

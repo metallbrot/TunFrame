@@ -17,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from detection.evaluate import load_detectors, run_peacetime, run_wartime, generate_allowlists, save_results, load_global_allowlist, wartime_stop_event, peacetime_stop_event, peacetime_done, tunnel_started_event, tunnel_phase_start_event, tunnel_phase_complete_event, detector_ready, cfg_safe_get, format_duration
-from detection.detector_base.readfile import readjson
+from detection.detector_base.readfile import readjson, log_end_offset
 from config.dns_config_generator import generate_all_configs
 
 CONFIG_PATH = PROJECT_ROOT / "config.yaml"
@@ -595,7 +595,8 @@ def run_setup(cfg: dict):
     except:
         pass
     
-    # Clear old logfile
+    # Clear old logfile. This is the only truncation: the collector container
+    # is stopped at this point. During a run, phases read from byte offsets.
     LOGFILE.parent.mkdir(parents=True, exist_ok=True)
     if LOGFILE.exists():
         file_size = LOGFILE.stat().st_size / (1024*1024)
@@ -797,8 +798,9 @@ def run_wartime_phase(
 
     all_results = []
 
-    # Clear log file BEFORE starting any traffic generators
-    LOGFILE.write_text("")
+    # Never truncate the log while the collector writes to it: record where
+    # wartime starts and read only from this offset.
+    wartime_offset = log_end_offset(LOGFILE)
 
 
     # Start benign traffic if enabled (regardless of DNSExfiltrator)
@@ -1005,13 +1007,14 @@ def run_wartime_phase(
             
             time.sleep(1)
             
-            # Clear log file for this configuration BEFORE starting DNSExfiltrator
-            LOGFILE.write_text("")
+            # Record where this configuration starts in the log BEFORE starting
+            # DNSExfiltrator; the log is never truncated while the collector runs.
+            config_offset = log_end_offset(LOGFILE)
             
             # Reset state for this configuration - create fresh log generator
             config_alldomains = set()
             config_start_timestamp = datetime.now()
-            config_log_generator = readjson(str(LOGFILE))
+            config_log_generator = readjson(str(LOGFILE), start_offset=config_offset)
             
             # Start server for this configuration
             logger.info(f"[+] Starting DNSExfiltrator server with {len(domains)} domains")
@@ -1288,8 +1291,8 @@ def run_wartime_phase(
         # Standard wartime without DNSExfiltrator
         logger.info(f"[+] Wartime started: Running for {format_duration(wartime_duration)}...")
         
-        # Create fresh generator for wartime (LOGFILE already cleared above)
-        wartime_log_generator = readjson(str(LOGFILE))
+        # Fresh generator for wartime, starting where wartime began in the log
+        wartime_log_generator = readjson(str(LOGFILE), start_offset=wartime_offset)
         
         wartime_stop_event.clear()
         war_timer = PhaseTimer(wartime_stop_event, wartime_duration).start()
@@ -1363,7 +1366,7 @@ def main():
         tunneling_domains_set = set(tunneling_domains)
         
         # Create log generator
-        log_generator = readjson(str(LOGFILE))
+        log_generator = readjson(str(LOGFILE), start_offset=log_end_offset(LOGFILE))
         
         # Run peacetime phase
         (
