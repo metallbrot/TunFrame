@@ -315,3 +315,11 @@ Entries are added in the commit that introduces the change.
     code actually uses (peacetime in minutes, default wartime/3).
 - **Affected outputs**: result location if `output.logdir` was set to a
   non-default path; configs using renamed keys no longer run.
+
+## C9: Thesis/code deviations recorded
+
+- No behavior change. Unused events from the old threaded controller were
+  removed; deviations between thesis and code are recorded in `DEVRECORD.md`
+  (controller design, missing "file exfiltrated" stop criterion as an open
+  design decision, root simulator placement, leakage excluding the triggering
+  query, FQDN filtering).

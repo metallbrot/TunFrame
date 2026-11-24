@@ -267,13 +267,10 @@ def format_duration(seconds: int) -> str:
     
     return "".join(parts) or "0s"
 
-detector_ready = threading.Event()
+# Phase stop events shared with main.py (set by PhaseTimer or by early stop).
 wartime_stop_event = threading.Event()
 peacetime_stop_event = threading.Event()
 peacetime_done = threading.Event()
-tunnel_started_event = threading.Event()
-tunnel_phase_start_event = threading.Event()
-tunnel_phase_complete_event = threading.Event()
 
 def load_detectors(detectors_path, active_detectors=None):
     """Load detector classes dynamically, filtered by active_detectors list."""
