@@ -16,7 +16,7 @@ warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from detection.evaluate import load_detectors, evaluate, run_peacetime, run_wartime, generate_allowlists, save_results, load_global_allowlist, wartime_stop_event, peacetime_stop_event, peacetime_done, tunnel_started_event, tunnel_phase_start_event, tunnel_phase_complete_event, detector_ready, cfg_safe_get, format_duration
+from detection.evaluate import load_detectors, run_peacetime, run_wartime, generate_allowlists, save_results, load_global_allowlist, wartime_stop_event, peacetime_stop_event, peacetime_done, tunnel_started_event, tunnel_phase_start_event, tunnel_phase_complete_event, detector_ready, cfg_safe_get, format_duration
 from detection.detector_base.readfile import readjson
 from config.dns_config_generator import generate_all_configs
 
