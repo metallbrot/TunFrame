@@ -2,7 +2,7 @@ import time
 import logging
 from abc import ABC, abstractmethod
 from detection.detector_base.metrics import true_positive_rate, false_positive_rate
-from detection.detector_base.feature_extraction import get_registered_domain, is_response, extract_record_type, format_bytes, query_payload_bytes
+from detection.detector_base.feature_extraction import get_registered_domain, is_response, format_bytes, query_payload_bytes, answer_payload_bytes
 from main import CONFIG_PATH, load_config, cfg_safe_get
 
 # Get the logger configured in main.py
@@ -61,10 +61,10 @@ class Detector(ABC):
             
             if istunnel and domain not in self.alarms:
                 self.tunneling_missed += 1
-                #TODO: add more Record Types
-                if is_response(logline) and extract_record_type(logline) == 'A':
-                    self.lv_down += 4
-                elif not is_response(logline):
+                if is_response(logline):
+                    # Downlink leakage: RDATA volume of the answer records.
+                    self.lv_down += answer_payload_bytes(logline)
+                else:
                     # Uplink leakage: full encoded payload of the query name.
                     self.lv_up += query_payload_bytes(logline)
             self.total_process_time += timediff

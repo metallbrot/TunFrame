@@ -105,6 +105,57 @@ def query_payload_bytes(event: Dict) -> int:
     return sum(len(label.encode("utf-8")) for label in subdomain.split(".") if label)
 
 
+# RDATA wire sizes of fixed-size record types, in bytes.
+_FIXED_RDATA_BYTES = {"A": 4, "AAAA": 16}
+# Record types whose RDATA is a single domain name.
+_NAME_RDATA_TYPES = {"CNAME", "NS", "PTR", "DNAME"}
+
+
+def _name_wire_bytes(name: str) -> int:
+    """Wire size of a domain name: one length octet per label plus the root octet."""
+    labels = [label for label in str(name).strip(".").split(".") if label]
+    return sum(len(label.encode("utf-8")) + 1 for label in labels) + 1
+
+
+def answer_payload_bytes(event: Dict) -> int:
+    """Return the RDATA volume carried by the answer section of a response.
+
+    Sizes per answer record:
+
+    * A: 4 bytes, AAAA: 16 bytes.
+    * CNAME, NS, PTR, DNAME: wire size of the target name.
+    * MX: 2 bytes preference plus the wire size of the exchange name.
+    * Fallback for every other type (TXT, SVCB, NULL, ...): the UTF-8 byte
+      length of DNS-collector's textual ``rdata``. This approximates the
+      payload and ignores length octets.
+
+    Responses without answer records (for example NXDOMAIN) carry 0 bytes.
+
+    Args:
+        event: Parsed DNS-collector event.
+
+    Returns:
+        int: Answer payload in bytes.
+    """
+    answers = json_safe_get(event, "dns.resource-records.an", []) or []
+    total = 0
+    for rr in answers:
+        if not isinstance(rr, dict):
+            continue
+        rtype = str(rr.get("rdatatype", "")).upper()
+        rdata = rr.get("rdata", "")
+        if rtype in _FIXED_RDATA_BYTES:
+            total += _FIXED_RDATA_BYTES[rtype]
+        elif rtype in _NAME_RDATA_TYPES:
+            total += _name_wire_bytes(rdata)
+        elif rtype == "MX":
+            parts = str(rdata).split()
+            total += 2 + _name_wire_bytes(parts[-1] if parts else "")
+        else:
+            total += len(str(rdata).encode("utf-8"))
+    return total
+
+
 def extract_subdomains_list(qname: str) -> List[str]:
     """
     Split domain into subdomains.

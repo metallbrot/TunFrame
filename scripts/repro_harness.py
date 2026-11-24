@@ -43,6 +43,18 @@ check("M3 uplink counts full payload", (one, d.lv_up - one) == (10, 13),
 
 def gen(events):
     for e in events: yield e
+def resp(qname, answers):
+    e = evt(qname, qr=True)
+    e["dns"]["resource-records"] = {"an": answers}
+    return e
+d = Never()
+d.process_line(resp('abc.tunnel.com', [{"rdatatype": "A", "rdata": "1.2.3.4"}, {"rdatatype": "AAAA", "rdata": "::1"}]), True)
+a = d.lv_down
+d.process_line(resp('abc.tunnel.com', []), True)
+d.process_line(resp('abc.tunnel.com', [{"rdatatype": "TXT", "rdata": "hello"}]), True)
+check("M4 downlink from answer records", (a, d.lv_down - a) == (20, 5),
+      "A+AAAA answer=%d bytes (expected 20); empty + TXT 'hello'=%d bytes (expected 5)" % (a, d.lv_down - a))
+
 dets = [FlagTunnel()]
 cfg1 = [evt('x%d.tunnel.com' % i) for i in range(5)] + [evt('a.com')]
 ev.wartime_stop_event.clear()

@@ -40,3 +40,17 @@ Entries are added in the commit that introduces the change.
   `seq.abcdef.tunnel.com` adds 9 bytes; `abcdef.tunnel.com` adds 6 bytes.
 - **Affected outputs**: `traffic_volume_up_bytes`,
   `estimated_real_traffic_up_bytes` (ULV in the thesis).
+
+## M4: Downlink leakage derived from answer records
+
+- **Old**: For a missed tunneling response, `lv_down` grew by a flat 4 bytes
+  if the record type was A, regardless of the number of answers or the rcode.
+  Responses of any other type added 0 bytes.
+- **New**: `lv_down` grows by the RDATA volume of all answer records
+  (`feature_extraction.answer_payload_bytes`): A 4 B, AAAA 16 B,
+  CNAME/NS/PTR/DNAME the wire size of the target name, MX 2 B plus the name.
+  Fallback for every other type (TXT, SVCB, NULL, ...): the UTF-8 length of
+  DNS-collector's textual `rdata`, which approximates the payload and ignores
+  length octets. Responses without answers add 0 bytes.
+- **Affected outputs**: `traffic_volume_down_bytes` (DLV in the thesis). For
+  single-answer A responses the value is unchanged.
