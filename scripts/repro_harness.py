@@ -119,6 +119,16 @@ e.wait(3)
 el = time.time() - t0
 check("M8 old timer cannot stop next phase", 0.9 <= el <= 1.5, "config 2 stop event fired after %.2f s (expected ~1.0 s)" % el)
 
+calls = []
+main.replay_fire_and_forget = lambda pcap, pps, label: calls.append(label)   # no docker
+main._started_replays.clear()
+main.start_replay("benign", "x.pcap", 10)      # peacetime
+main.start_replay("benign", "x.pcap", 10)      # wartime must continue, not restart
+time.sleep(0.2)
+check("M10 benign replay started once", calls == ["benign"], "replay starts: %s (expected ['benign'])" % calls)
+check("M10 peacetime replay only with peacetime", "    if peacetime_duration:\n        if benign_enabled:" in open(os.path.join(ROOT, "main.py")).read(),
+      "peacetime phase starts replays only when peacetime_duration > 0")
+
 import tldextract
 try:
     tldextract.extract(None); print("8) tldextract.extract(None) did not raise")

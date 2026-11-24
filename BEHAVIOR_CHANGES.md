@@ -125,3 +125,20 @@ Entries are added in the commit that introduces the change.
   metric of phases whose log grew faster than ~80 lines/s. Results become a
   function of the traffic actually generated in the phase window rather than
   of the reader speed.
+
+## M10: Benign replay starts once and is never restarted
+
+- **Old**: `run_peacetime_phase()` started the benign (and wildcard) replay even
+  when peacetime was 0, and `run_wartime_phase()` started a second replay of
+  the same pcap from packet 0. Neither was ever stopped. With peacetime > 0,
+  wartime therefore repeated the traffic that had built the allowlist (biasing
+  FPR downward) on top of the still-running peacetime replay; with peacetime 0,
+  two copies of the replay ran in parallel.
+- **New**: `main.start_replay()` starts each traffic source at most once per
+  run. The peacetime phase starts replays only when peacetime > 0. Wartime
+  continues a running replay (the unseen remainder of the capture) and only
+  starts it if no peacetime replay exists. Peacetime thus consumes the first
+  slice of the capture and wartime the following one, matching thesis
+  section 3.4.
+- **Affected outputs**: all benign-traffic metrics (FP, TN, FPR, line counts)
+  of every run with benign replay enabled. Wildcard replay: see C6.

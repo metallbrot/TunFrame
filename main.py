@@ -296,6 +296,33 @@ def replay_fire_and_forget(pcap: str, pps: int, label: str):
     docker_exec("pcap-replayer", *cmd, check=False)
 
 
+# Traffic sources whose replay has been started in this run. tcpreplay keeps
+# running until it reaches the end of the pcap or the containers stop.
+_started_replays = set()
+
+
+def start_replay(label: str, pcap: str, pps) -> bool:
+    """Start a fire-and-forget tcpreplay at most once per run and traffic source.
+
+    A replay started during peacetime keeps running into wartime, so wartime
+    sees the continuation of the capture instead of a restart from packet 0.
+
+    Args:
+        label: Traffic source name (``benign``, ``wildcard``, ``tunnel``).
+        pcap: Pcap file name inside the pcap directory.
+        pps: Replay rate in packets per second; None or <= 0 for original timing.
+
+    Returns:
+        bool: True if a new replay was started, False if it was already running.
+    """
+    if label in _started_replays:
+        logger.info(f"[+] {label} replay already running since an earlier phase, continuing it")
+        return False
+    _started_replays.add(label)
+    threading.Thread(target=replay_fire_and_forget, args=(pcap, pps, label), daemon=True).start()
+    return True
+
+
 class PhaseTimer:
     """Cancellable timer that sets a phase stop event after a duration.
 
@@ -624,24 +651,18 @@ def run_peacetime_phase(
     wildcard_pcap = cfg_safe_get(cfg, ["traffic", "wildcard", "pcap"], "")
     wildcard_pps = cfg_safe_get(cfg, ["traffic", "wildcard", "pps"])
 
-    if benign_enabled:
-        threading.Thread(
-            target=replay_fire_and_forget,
-            args=(benign_pcap, benign_pps, "benign"),
-            daemon=True,
-        ).start()
+    # Background replays start here only if there is a peacetime phase; with
+    # peacetime disabled they are started by the wartime phase.
+    if peacetime_duration:
+        if benign_enabled:
+            start_replay("benign", benign_pcap, benign_pps)
+        if wildcard_enabled:
+            start_replay("wildcard", wildcard_pcap, wildcard_pps)
 
-    if wildcard_enabled:
-        threading.Thread(
-            target=replay_fire_and_forget,
-            args=(wildcard_pcap, wildcard_pps, "wildcard"),
-            daemon=True,
-        ).start()
-
-    if wildcard_enabled or benign_enabled:
-        logger.info(f"[+] Benign traffic started - running for {format_duration(peacetime_duration)}...")
-    else:
-        logger.info(f"[+] No benign traffic - waiting for external DNS traffic or wartime...")
+        if wildcard_enabled or benign_enabled:
+            logger.info(f"[+] Benign traffic started - running for {format_duration(peacetime_duration)}...")
+        else:
+            logger.info(f"[+] No benign traffic - waiting for external DNS traffic or wartime...")
 
     alldomains = set()
     peace_logcount = 0
@@ -788,22 +809,15 @@ def run_wartime_phase(
     benign_pps = cfg_safe_get(cfg, ["traffic", "benign", "pps"])
     
     if benign_enabled:
-        threading.Thread(
-            target=replay_fire_and_forget,
-            args=(benign_pcap, benign_pps, "benign"),
-            daemon=True,
-        ).start()
-        logger.info(f"[+] Benign traffic replay started - running for {format_duration(wartime_duration)}...")
+        # Continues the peacetime replay if one is running; never restarts it.
+        if start_replay("benign", benign_pcap, benign_pps):
+            logger.info(f"[+] Benign traffic replay started - running for {format_duration(wartime_duration)}...")
         # Note: tcpreplay runs in background, no direct verification possible
 
     # Start tunnel traffic if enabled and DNSExfiltrator is not
     if tunneling_enabled and not dnsexfil_enabled:
-        threading.Thread(
-            target=replay_fire_and_forget,
-            args=(tunneling_pcap, tunneling_pps, "tunnel"),
-            daemon=True,
-        ).start()
-        logger.info(f"[+] Tunnel replay started - running for {format_duration(wartime_duration)}...")
+        if start_replay("tunnel", tunneling_pcap, tunneling_pps):
+            logger.info(f"[+] Tunnel replay started - running for {format_duration(wartime_duration)}...")
         # Note: tcpreplay runs in background, no direct verification possible
     
     # Handle DNSExfiltrator configurations sequentially
