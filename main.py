@@ -323,6 +323,37 @@ def start_replay(label: str, pcap: str, pps) -> bool:
     return True
 
 
+# Ratio of encoded query characters to raw payload bytes per encoding
+# (thesis section 2.3.1). Used to estimate the real data volume from ULV.
+ENCODING_EXPANSION_FACTORS = {
+    'base32': 8 / 5,       # 1.6
+    'base32map': 3 * 8 / 5,  # 4.8: each Base32 character becomes a 3-letter word
+    'base64': 4 / 3,
+    'hex': 2.0,
+}
+
+
+def config_expansion_factor(config: dict) -> float:
+    """Return the expansion factor for one DNSExfiltrator configuration.
+
+    An explicit ``expansion_factor`` in the configuration wins; otherwise the
+    factor is derived from its ``encoding``.
+
+    Args:
+        config: Filled DNSExfiltrator configuration.
+
+    Returns:
+        float: Expansion factor (1.0 for an unknown encoding, with a warning).
+    """
+    if config.get('expansion_factor') is not None:
+        return float(config['expansion_factor'])
+    encoding = str(config.get('encoding', '')).lower()
+    if encoding not in ENCODING_EXPANSION_FACTORS:
+        logger.warning(f"[!] Unknown encoding '{encoding}', using expansion factor 1.0")
+        return 1.0
+    return ENCODING_EXPANSION_FACTORS[encoding]
+
+
 class PhaseTimer:
     """Cancellable timer that sets a phase stop event after a duration.
 
@@ -467,7 +498,8 @@ def get_dnsexfiltrator_configs(cfg: dict):
         'label_max_size': 63,
         'encoding': 'base32',
         'dilution': 0,
-        'domains': []
+        'domains': [],
+        'expansion_factor': None,  # None: derive from 'encoding'
     }
     
     def fill_defaults(config_dict):
@@ -1220,7 +1252,8 @@ def run_wartime_phase(
             # Run wartime detection for this specific configuration with clean state
             try:
                 results, logcount, tunnel_count, seen_tunnels, config_alldomains, counts = run_wartime(
-                    active_detectors, config_log_generator, config_tunneling_domains_set, global_allowlist
+                    active_detectors, config_log_generator, config_tunneling_domains_set, global_allowlist,
+                    expansion_factor=config_expansion_factor(config),
                 )
             finally:
                 war_timer.cancel()
@@ -1301,7 +1334,8 @@ def run_wartime_phase(
         # The TN/FPR universe is the set of domains seen in this wartime only.
         try:
             results, logcount, tunnel_count, seen_tunnels, alldomains, counts = run_wartime(
-                active_detectors, wartime_log_generator, tunneling_domains_set, global_allowlist
+                active_detectors, wartime_log_generator, tunneling_domains_set, global_allowlist,
+                expansion_factor=float(cfg_safe_get(cfg, ['traffic', 'tunnel', 'expansion_factor'], 1) or 1),
             )
         finally:
             war_timer.cancel()

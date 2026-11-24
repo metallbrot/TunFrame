@@ -99,7 +99,8 @@ def _run_peacetime(detectors: list, log_generator, tunneling_domains: set) -> tu
     return peace_logcount, alldomains
 
 
-def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_allowlist: set) -> tuple:
+def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_allowlist: set,
+                expansion_factor: float = 1.0) -> tuple:
     """Run one wartime window and evaluate all detectors on it.
 
     The domain universe used for TN and FPR contains only the registered
@@ -111,6 +112,8 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
         log_generator: Generator yielding parsed log events (or None when idle).
         tunneling_domains: Ground-truth tunneling domains for this window.
         global_allowlist: Global allowlist (reported per detector).
+        expansion_factor: Encoding expansion factor of the tunnel traffic in
+            this window, used to estimate the real uplink data volume.
 
     Returns:
         tuple: (results, logcount, tunnel_count, seen_tunnels, alldomains, counts).
@@ -190,6 +193,7 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
         results.append(detector.evaluate(
             seen_tunnels, alldomains, logcount, counts["tunnel_queries"], global_allowlist,
             tunneling_responses=counts["tunnel_responses"],
+            expansion_factor=expansion_factor,
         ))
         logger.info("")
     

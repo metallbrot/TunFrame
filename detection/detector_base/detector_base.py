@@ -129,7 +129,8 @@ class Detector(ABC):
                 # Non-tunneling domain (false positive) - red
                 logger.info(f"\n{self.__class__.__name__}: Added \033[91m{domain}\033[0m to alarms")
 
-    def evaluate(self, tunneling_domains: set, all_domains: set, total_loglines: int, tunneling_queries: int, global_allowlist: set, tunneling_responses: int = 0) -> dict:
+    def evaluate(self, tunneling_domains: set, all_domains: set, total_loglines: int, tunneling_queries: int,
+                 global_allowlist: set, tunneling_responses: int = 0, expansion_factor: float = 1.0) -> dict:
         """Compute domain-level detection metrics for the finished phase.
 
         Every registered domain in ``all_domains`` falls into exactly one of the
@@ -149,13 +150,14 @@ class Detector(ABC):
             global_allowlist: Global allowlist, used to report the
                 detector-specific part of the allowlist.
             tunneling_responses: Number of tunneling response lines.
+            expansion_factor: Encoding expansion factor of the tunnel traffic;
+                ``estimated_real_traffic_up_bytes = lv_up / expansion_factor``.
 
         Returns:
             dict: Metrics, confusion-matrix counts and accounting counters.
         """
-        cfg = load_config(CONFIG_PATH)
-        expansion_factor = cfg_safe_get(cfg, ['traffic', 'tunnel', 'expansion_factor'], 1)
-        
+        expansion_factor = float(expansion_factor) if expansion_factor else 1.0
+
         alarms = self.alarms.difference(self.allowlist)
         logger.info(f"num alarms: {len(alarms)}")
         
@@ -255,6 +257,7 @@ class Detector(ABC):
             "allowlisted_tunnel_up_bytes": self.allowlisted_tunnel_lv_up,
             "allowlisted_tunnel_down_bytes": self.allowlisted_tunnel_lv_down,
             "estimated_real_traffic_up_bytes": self.lv_up / expansion_factor,
+            "expansion_factor": expansion_factor,
             
             # Domain statistics
             "total_alarms": len(alarms),

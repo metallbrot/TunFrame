@@ -200,3 +200,18 @@ Entries are added in the commit that introduces the change.
 - **Affected outputs**: line counts (no events lost at phase starts or on
   partial writes). Wartime in replay mode now begins with the events logged
   after the wartime start offset instead of an emptied file.
+
+## C1: Expansion factor per configuration, passed in memory
+
+- **Old**: `Detector.evaluate()` re-read `config.yaml` from disk and divided
+  ULV by the single global `traffic.tunnel.expansion_factor` for every
+  DNSExfiltrator config, including encoding sweeps.
+- **New**: The factor is passed in memory (`run_wartime(..., expansion_factor)`
+  → `Detector.evaluate(..., expansion_factor)`). DNSExfiltrator configs use an
+  explicit `expansion_factor` key if given, otherwise the factor of their
+  encoding: base32 1.6, base32map 4.8, base64 4/3, hex 2.0 (unknown: 1.0 with a
+  warning). Replay mode keeps `traffic.tunnel.expansion_factor`. The value used
+  is stored per detector as `expansion_factor`.
+- **Affected outputs**: `estimated_real_traffic_up_bytes` for DNSExfiltrator
+  configs whose encoding factor differs from the global value (all configs
+  with the current `config.yaml`, which sets 1).

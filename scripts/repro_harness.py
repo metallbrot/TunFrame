@@ -82,6 +82,12 @@ check("M11 allowlisted tunnel traffic accounted", (r11['allowlisted_tunnel_queri
       r11['allowlisted_tunnel_queries'], r11['allowlisted_tunnel_responses'], r11['allowlisted_tunnel_up_bytes'],
       r11['allowlisted_tunnel_down_bytes'], r11['tunneling_missed'], d.detect_calls))
 
+d = Never()
+d.process_line(evt('abcdefghijklmnop.tunnel.com'), True)    # 16 payload bytes
+r_c1 = d.evaluate({'tunnel.com'}, {'tunnel.com'}, 1, 1, set(), expansion_factor=main.config_expansion_factor({'encoding': 'base32map'}))
+check("C1 per-config expansion factor", abs(r_c1['estimated_real_traffic_up_bytes'] - 16 / 4.8) < 1e-9 and r_c1['expansion_factor'] == 4.8,
+      "base32map: 16 B ULV -> %.3f B real (expected 3.333)" % r_c1['estimated_real_traffic_up_bytes'])
+
 dets = [FlagTunnel()]
 cfg1 = [evt('x%d.tunnel.com' % i) for i in range(5)] + [evt('a.com')]
 ev.wartime_stop_event.clear()
