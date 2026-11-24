@@ -8,6 +8,7 @@ import logging
 import warnings
 from datetime import datetime
 import shutil
+import copy
 
 # Suppress sklearn version warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
@@ -469,94 +470,108 @@ def build_and_save_metadata(
     save_results(str(results_file), results, metadata)
 
 
+# Default values for every DNSExfiltrator configuration.
+DNSEXFIL_DEFAULTS = {
+    'file': '/data/synthetic_cc_data_100.csv',
+    'password': 'tunframe',
+    'throttle': 10,
+    'throttle_random': 0,
+    'label_max_size': 63,
+    'encoding': 'base32',
+    'dilution': 0,
+    'domains': [],
+    'expansion_factor': None,  # None: derive from 'encoding'
+}
+
+
+def _check_dnsexfil_keys(where: str, keys) -> None:
+    """Raise ValueError if a DNSExfiltrator config block uses unknown parameters."""
+    unknown = sorted(set(keys) - set(DNSEXFIL_DEFAULTS) - {'name'})
+    if unknown:
+        raise ValueError(
+            f"Unknown DNSExfiltrator parameter(s) in {where}: {unknown}. "
+            f"Valid parameters: {sorted(DNSEXFIL_DEFAULTS)}"
+        )
+
+
 def get_dnsexfiltrator_configs(cfg: dict):
     """Get DNSExfiltrator configurations from config file.
-    
-    Handles baseline config, parameter sweeps, and predefined profiles.
-    
+
+    Builds the baseline, one config per sweep value and the predefined
+    profiles. Sweeps and profiles inherit every value they do not set from the
+    filled baseline; the baseline inherits from ``DNSEXFIL_DEFAULTS``.
+    Unknown parameter names in the baseline, a sweep or a profile raise
+    ValueError at startup.
+
     Args:
         cfg: Configuration dictionary
-    
+
     Returns:
         list: List of dnsexfiltrator configurations
+
+    Raises:
+        ValueError: If a block uses an unknown parameter name.
     """
     dnsexfil_enabled = cfg_safe_get(cfg, ['dnsexfiltrator', 'enabled'], False)
     if not dnsexfil_enabled:
         logger.info("[+] DNSExfiltrator disabled")
         return []
-    
+
     logger.info("\n" + "="*60)
     logger.info("DNSExfiltrator Configurations")
     logger.info("="*60)
-    
-    # Default values for all configurations
-    DEFAULTS = {
-        'file': '/data/synthetic_cc_data_100.csv',
-        'password': 'tunframe',
-        'throttle': 10,
-        'throttle_random': 0,
-        'label_max_size': 63,
-        'encoding': 'base32',
-        'dilution': 0,
-        'domains': [],
-        'expansion_factor': None,  # None: derive from 'encoding'
-    }
-    
-    def fill_defaults(config_dict):
-        """Fill missing values in a config dict with defaults."""
-        filled = config_dict.copy() if config_dict else {}
-        for key, default_value in DEFAULTS.items():
-            if key not in filled:
-                filled[key] = default_value
+
+    def with_base(base: dict, overrides: dict) -> dict:
+        """Deep-copy ``base`` and apply ``overrides`` on top."""
+        filled = copy.deepcopy(base)
+        filled.update(copy.deepcopy(overrides or {}))
         return filled
-    
-    # Collect all configurations
+
     configs = []
-    
-    # 1. Add baseline configuration
-    baseline_cfg = cfg_safe_get(cfg, ['dnsexfiltrator', 'baseline'], None)
+
+    # 1. Baseline (inherits DNSEXFIL_DEFAULTS)
+    baseline_cfg = cfg_safe_get(cfg, ['dnsexfiltrator', 'baseline'], None) or {}
+    _check_dnsexfil_keys("baseline", baseline_cfg)
+    base_cfg = with_base(DNSEXFIL_DEFAULTS, baseline_cfg)
+    base_cfg.pop('name', None)
     if baseline_cfg:
         logger.info(f"[+] Processing baseline configuration")
-        filled_baseline = fill_defaults(baseline_cfg)
-        filled_baseline['name'] = 'baseline'
-        configs.append(filled_baseline)
-    
-    # Create base config for sweeps (use baseline if available, otherwise empty dict)
-    base_cfg = fill_defaults(baseline_cfg) if baseline_cfg else fill_defaults({})
-        
-    # 2. Generate configurations from sweeps
-    sweeps = cfg_safe_get(cfg, ['dnsexfiltrator', 'sweeps'], [])
+        configs.append(with_base(base_cfg, {'name': 'baseline'}))
+
+    # 2. Sweeps (inherit the filled baseline)
+    sweeps = cfg_safe_get(cfg, ['dnsexfiltrator', 'sweeps'], []) or []
     for sweep in sweeps:
         sweep_name = sweep.get('name', 'unnamed_sweep')
         parameter = sweep.get('parameter', '')
-        values = sweep.get('values', [])
-
-        for value in values:
-            sweep_config = base_cfg.copy()
+        if parameter not in DNSEXFIL_DEFAULTS:
+            raise ValueError(
+                f"Unknown sweep parameter '{parameter}' in sweep '{sweep_name}'. "
+                f"Valid parameters: {sorted(DNSEXFIL_DEFAULTS)}"
+            )
+        for value in sweep.get('values', []):
+            sweep_config = with_base(base_cfg, {parameter: value})
             sweep_config['name'] = f"{sweep_name}_{parameter}_{value}"
-            sweep_config[parameter] = value
             configs.append(sweep_config)
             logger.info(f"[+] Added sweep config: {sweep_config['name']} ({parameter}={value})")
-    
-    # 3. Add predefined profiles
-    profiles = cfg_safe_get(cfg, ['dnsexfiltrator', 'profiles'], [])
+
+    # 3. Profiles (inherit the filled baseline)
+    profiles = cfg_safe_get(cfg, ['dnsexfiltrator', 'profiles'], []) or []
     for profile in profiles:
         profile_name = profile.get('name', 'unnamed_profile')
-        filled_profile = fill_defaults(profile)
+        _check_dnsexfil_keys(f"profile '{profile_name}'", profile)
+        filled_profile = with_base(base_cfg, profile)
         filled_profile['name'] = profile_name
         configs.append(filled_profile)
         logger.info(f"[+] Added profile: {profile_name}")
-    
-    # If no configurations were found, create a default one
+
+    # If no configurations were found, run the baseline values once
     if not configs:
-        default_config = fill_defaults({})
-        default_config['name'] = 'default'
-        configs.append(default_config)
+        configs.append(with_base(base_cfg, {'name': 'default'}))
         logger.info("[+] Created default configuration")
-    
+
     logger.info(f"[+] Total DNSExfiltrator configurations: {len(configs)}")
     logger.info("="*60)
-    
+
     return configs
 
 

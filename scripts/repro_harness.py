@@ -88,6 +88,22 @@ r_c1 = d.evaluate({'tunnel.com'}, {'tunnel.com'}, 1, 1, set(), expansion_factor=
 check("C1 per-config expansion factor", abs(r_c1['estimated_real_traffic_up_bytes'] - 16 / 4.8) < 1e-9 and r_c1['expansion_factor'] == 4.8,
       "base32map: 16 B ULV -> %.3f B real (expected 3.333)" % r_c1['estimated_real_traffic_up_bytes'])
 
+c2cfg = {'dnsexfiltrator': {'enabled': True,
+          'baseline': {'throttle': 0, 'label_max_size': 50, 'domains': ['tunnel.com']},
+          'sweeps': [{'name': 's', 'parameter': 'throttle', 'values': [5]}],
+          'profiles': [{'name': 'p', 'encoding': 'base64'}]}}
+cs = {c['name']: c for c in main.get_dnsexfiltrator_configs(c2cfg)}
+p = cs['p']
+ok_inherit = p['domains'] == ['tunnel.com'] and p['throttle'] == 0 and p['label_max_size'] == 50 and p['encoding'] == 'base64'
+try:
+    main.get_dnsexfiltrator_configs({'dnsexfiltrator': {'enabled': True, 'baseline': {'domains': ['t.com']},
+                                     'sweeps': [{'name': 'x', 'parameter': 'throtle', 'values': [1]}]}})
+    ok_validate = False
+except ValueError:
+    ok_validate = True
+check("C2 profiles inherit baseline; params validated", ok_inherit and ok_validate,
+      "profile p=%s; typo rejected=%s" % ({k: p[k] for k in ('domains', 'throttle', 'label_max_size', 'encoding')}, ok_validate))
+
 dets = [FlagTunnel()]
 cfg1 = [evt('x%d.tunnel.com' % i) for i in range(5)] + [evt('a.com')]
 ev.wartime_stop_event.clear()

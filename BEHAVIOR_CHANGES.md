@@ -215,3 +215,17 @@ Entries are added in the commit that introduces the change.
 - **Affected outputs**: `estimated_real_traffic_up_bytes` for DNSExfiltrator
   configs whose encoding factor differs from the global value (all configs
   with the current `config.yaml`, which sets 1).
+
+## C2: Profiles inherit the baseline; parameter names are validated
+
+- **Old**: Sweep configs inherited the baseline, but profiles were filled from
+  hard-coded defaults. Profiles without `domains` (all three in `config.yaml`)
+  got an empty domain list and could not run, and every value a profile did
+  not set (for example `throttle` 10 instead of the baseline's 0) silently
+  differed from the baseline. Sweep parameter names were not checked; a typo
+  re-ran the baseline under a sweep name.
+- **New**: Baseline ← `DNSEXFIL_DEFAULTS`; sweeps and profiles ← filled
+  baseline (deep-copied). Unknown parameter names in the baseline, a sweep's
+  `parameter` or a profile raise `ValueError` at startup.
+- **Affected outputs**: profile configs now run with the baseline's domains
+  and unspecified values.
