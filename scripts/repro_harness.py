@@ -97,6 +97,12 @@ check("M7 no carry-over between configs", (res2[1], res2[0][0]['processed_lines'
 main_src = open(os.path.join(ROOT, "main.py")).read()
 check("M7 main resets detectors per config", "detector.phase_reset()" in main_src, "phase_reset() call present in main.py")
 
+ev.peacetime_done.clear()
+ev.peacetime_stop_event.clear()
+ev.run_peacetime([Never()], gen([evt('p.net')]), {'tunnel.com'})
+check("M13 run_peacetime sets peacetime_done", ev.peacetime_done.is_set() and not hasattr(ev, 'evaluate'),
+      "peacetime_done set=%s, legacy evaluate() present=%s" % (ev.peacetime_done.is_set(), hasattr(ev, 'evaluate')))
+
 det = [Never()]
 peace = [evt('peace%d.net' % i) for i in range(20)]
 ev.peacetime_stop_event.clear()

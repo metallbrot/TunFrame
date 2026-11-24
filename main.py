@@ -685,10 +685,8 @@ def run_peacetime_phase(
         finally:
             peace_timer.cancel()
         
-        # Wait for peacetime cleanup to complete
-        if not peacetime_done.wait(timeout=20):
-            logger.warning("[!] Peacetime cleanup timed out, continuing anyway")
-        else:
+        # run_peacetime() sets peacetime_done itself when it returns.
+        if peacetime_done.is_set():
             logger.info(f"[+] Peacetime done!")
         
         logger.info("[+] Generating allowlists...")

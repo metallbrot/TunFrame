@@ -170,3 +170,15 @@ Entries are added in the commit that introduces the change.
   default; phases end through their timer or early stop only.
 - **Affected outputs**: phase duration and `actual_runtime`; slow-rate runs
   without background traffic no longer end after two idle minutes.
+
+## M13: No 20 s wait after peacetime; legacy evaluate() removed
+
+- **Old**: After peacetime, `main.py` waited up to 20 s for `peacetime_done`,
+  which only the unused legacy `evaluate()` could set, then logged
+  "Peacetime cleanup timed out". Every run with peacetime lost 20 s between
+  peacetime and wartime, during which background replay kept running unread.
+- **New**: `run_peacetime()` sets `peacetime_done` itself when it returns.
+  The legacy threaded `detection.evaluate.evaluate()` (dead code that called a
+  nonexistent `reset()`) was removed.
+- **Affected outputs**: `actual_runtime`; wartime now starts right after
+  peacetime.
