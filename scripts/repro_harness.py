@@ -38,7 +38,8 @@ d = Never()
 d.process_line(evt('abcdefghij.tunnel.com'), True)          # single data label
 one = d.lv_up
 d.process_line(evt('seq.abcdefghij.tunnel.com'), True)      # two labels
-print("3) ULV single-label query adds %d bytes; two-label query adds %d bytes" % (one, d.lv_up - one))
+check("M3 uplink counts full payload", (one, d.lv_up - one) == (10, 13),
+      "single-label query adds %d bytes (expected 10); two-label query adds %d bytes (expected 13)" % (one, d.lv_up - one))
 
 def gen(events):
     for e in events: yield e

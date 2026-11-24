@@ -85,6 +85,26 @@ def extract_subdomain_string(event: dict) -> str:
     return domain
 
 
+def query_payload_bytes(event: Dict) -> int:
+    """Return the size of the encoded payload carried in a query name.
+
+    The payload is every label left of the registered domain, counted in bytes
+    without the separating dots. Example: ``seq.abcdef.tunnel.com`` carries
+    ``len("seq") + len("abcdef") = 9`` bytes. Apex queries carry 0 bytes.
+
+    Args:
+        event: Parsed DNS-collector event.
+
+    Returns:
+        int: Payload size in bytes.
+    """
+    fqdn = get_fqdn(event)
+    if not fqdn:
+        return 0
+    subdomain = tldextract.extract(fqdn).subdomain
+    return sum(len(label.encode("utf-8")) for label in subdomain.split(".") if label)
+
+
 def extract_subdomains_list(qname: str) -> List[str]:
     """
     Split domain into subdomains.

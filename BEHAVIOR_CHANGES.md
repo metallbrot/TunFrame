@@ -27,3 +27,16 @@ Entries are added in the commit that introduces the change.
   both modes. The `alldomains` parameter of `run_wartime()` was removed.
 - **Affected outputs**: `tn`, `fpr`, `accuracy`, `total_unique_domains`,
   `dataset_statistics.unique_domains` in replay mode with peacetime > 0.
+
+## M3: Uplink leakage counts the full query payload
+
+- **Old**: For a missed tunneling query, `lv_up` grew by the length of the
+  last subdomain label only, and only if the subdomain had at least two
+  labels. Single-label payloads (the current DNSExfiltrator request layout)
+  contributed 0 bytes; multi-label payloads were under-counted.
+- **New**: `lv_up` grows by the byte length of all labels left of the
+  registered domain, without the separating dots
+  (`feature_extraction.query_payload_bytes`). Example:
+  `seq.abcdef.tunnel.com` adds 9 bytes; `abcdef.tunnel.com` adds 6 bytes.
+- **Affected outputs**: `traffic_volume_up_bytes`,
+  `estimated_real_traffic_up_bytes` (ULV in the thesis).
