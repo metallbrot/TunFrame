@@ -80,7 +80,28 @@ class Detector(ABC):
                 # Non-tunneling domain (false positive) - red
                 logger.info(f"\n{self.__class__.__name__}: Added \033[91m{domain}\033[0m to alarms")
 
-    def evaluate(self, tunneling_domains: set[str], all_domains: set[str], total_loglines: int, tunneling_loglines: int, global_allowlist: set) -> dict[str, float | int]:
+    def evaluate(self, tunneling_domains: set, all_domains: set, total_loglines: int, tunneling_loglines: int, global_allowlist: set) -> dict:
+        """Compute domain-level detection metrics for the finished phase.
+
+        Every registered domain in ``all_domains`` falls into exactly one of the
+        four confusion-matrix classes:
+
+        * TP: alarmed tunneling domains.
+        * FP: alarmed domains that are not tunneling domains.
+        * FN: tunneling domains without an alarm.
+        * TN: all remaining domains, i.e. ``all_domains - TP - FP - FN``.
+
+        Args:
+            tunneling_domains: Tunneling domains actually seen in this phase.
+            all_domains: Registered domains seen in this phase.
+            total_loglines: Number of log lines processed in this phase.
+            tunneling_loglines: Number of tunneling log lines in this phase.
+            global_allowlist: Global allowlist, used to report the
+                detector-specific part of the allowlist.
+
+        Returns:
+            dict: Metrics, confusion-matrix counts and accounting counters.
+        """
         cfg = load_config(CONFIG_PATH)
         expansion_factor = cfg_safe_get(cfg, ['traffic', 'tunnel', 'expansion_factor'], 1)
         
@@ -93,7 +114,7 @@ class Detector(ABC):
         tp = alarms.intersection(tunneling_domains)
         fp = alarms.difference(tunneling_domains)
         fn = tunneling_domains.difference(tp)
-        tn = all_domains.difference(tp).difference(fp)
+        tn = all_domains.difference(tp).difference(fp).difference(fn)
         
         tpr = true_positive_rate(len(tp), len(fn))
         fpr = false_positive_rate(len(fp), len(tn))

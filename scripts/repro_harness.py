@@ -9,6 +9,13 @@ from detection.detector_base.detector_base import Detector
 from detection.detector_base.readfile import readjson
 logging.getLogger('dns_detector').setLevel(logging.ERROR)  # silence harness output
 
+FAILS = []
+def check(label, ok, detail):
+    """Print a PASS/FAIL line for a fixed finding and remember failures."""
+    print(("PASS " if ok else "FAIL ") + label + ": " + detail)
+    if not ok:
+        FAILS.append(label)
+
 def evt(qname, qr=False, qtype='A', ts='2026-11-24T10:00:00.000000000Z'):
     return {"dns": {"qname": qname, "qtype": qtype, "flags": {"qr": qr}, "qdcount": 1, "ancount": 0, "length": 50, "qclass": "IN"},
             "network": {"query-ip": "172.16.40.40"}, "dnstap": {"timestamp-rfc3339ns": ts}}
@@ -24,7 +31,8 @@ print("1) format_duration:", repr(ev.format_duration(64.435775)), repr(ev.format
 
 d = Never(); d.alarms = set()
 r = d.evaluate({'tunnel.com'}, {'tunnel.com', 'a.com', 'b.com'}, 10, 2, set())
-print("2) TN double count: tp=%d fp=%d tn=%d fn=%d for 3 domains (1 tunnel missed) accuracy=%.3f" % (r['tp'], r['fp'], r['tn'], r['fn'], r['accuracy']))
+check("M1 TN excludes FN", (r['tp'], r['fp'], r['tn'], r['fn']) == (0, 0, 2, 1),
+      "tp=%d fp=%d tn=%d fn=%d for 3 domains (1 tunnel missed)" % (r['tp'], r['fp'], r['tn'], r['fn']))
 
 d = Never()
 d.process_line(evt('abcdefghij.tunnel.com'), True)          # single data label
@@ -85,3 +93,5 @@ try:
     print("9) aggregator imports fine")
 except Exception as ex:
     print("9) aggregator import fails:", type(ex).__name__, ex)
+
+sys.exit(1 if FAILS else 0)
