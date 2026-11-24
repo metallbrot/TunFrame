@@ -98,3 +98,17 @@ Entries are added in the commit that introduces the change.
   of a run.
 - **Caveat**: detectors that do not override `on_phase_reset()` still carry
   their internal state across configs.
+
+## M8: Phase timers are cancelled when a phase ends
+
+- **Old**: Each phase started a fire-and-forget thread that set the stop event
+  after the phase duration. When a phase ended early, its thread kept running
+  and later set the stop event during the next DNSExfiltrator config, cutting
+  that config short. `run_peacetime()`/`run_wartime()` also cleared the stop
+  event after the timer had been armed.
+- **New**: `main.PhaseTimer` wraps `threading.Timer`. Every phase cancels its
+  timer in a `finally` block, so no stale timer can stop a later phase. The run
+  loops no longer clear the event themselves; `main.py` clears it before arming
+  the timer.
+- **Affected outputs**: wartime length (and therefore every metric) of configs
+  that followed an early-ending config.

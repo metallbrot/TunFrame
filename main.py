@@ -296,12 +296,30 @@ def replay_fire_and_forget(pcap: str, pps: int, label: str):
     docker_exec("pcap-replayer", *cmd, check=False)
 
 
-def start_timer_event(event: threading.Event, duration: float):
-    """Start a thread that sets an event after a duration."""
-    def timer():
-        time.sleep(duration)
-        event.set()
-    threading.Thread(target=timer, daemon=True).start()
+class PhaseTimer:
+    """Cancellable timer that sets a phase stop event after a duration.
+
+    Every phase must cancel its timer when it ends, also when it ends early
+    (all tunnels detected, log ended, error). A cancelled timer can no longer
+    set the event, so it cannot cut a later phase short.
+
+    Args:
+        event: Stop event to set when the duration has elapsed.
+        duration: Phase duration in seconds.
+    """
+
+    def __init__(self, event: threading.Event, duration: float):
+        self._timer = threading.Timer(duration, event.set)
+        self._timer.daemon = True
+
+    def start(self) -> "PhaseTimer":
+        """Start the timer and return self."""
+        self._timer.start()
+        return self
+
+    def cancel(self) -> None:
+        """Cancel the timer; a no-op if it already fired."""
+        self._timer.cancel()
 
 
 def build_and_save_metadata(
@@ -639,10 +657,12 @@ def run_peacetime_phase(
         peacetime_done.clear()
         
         # Start timer that will signal peacetime to stop
-        start_timer_event(peacetime_stop_event, peacetime_duration)
-        
-        # Run peacetime (will block until stop event is set)
-        peace_logcount, alldomains = run_peacetime(active_detectors, log_generator_iter, tunneling_domains_set)
+        peace_timer = PhaseTimer(peacetime_stop_event, peacetime_duration).start()
+        try:
+            # Run peacetime (will block until stop event is set)
+            peace_logcount, alldomains = run_peacetime(active_detectors, log_generator_iter, tunneling_domains_set)
+        finally:
+            peace_timer.cancel()
         
         # Wait for peacetime cleanup to complete
         if not peacetime_done.wait(timeout=20):
@@ -1178,14 +1198,17 @@ def run_wartime_phase(
 
             # Reset wartime event and run detection for this configuration
             wartime_stop_event.clear()
-            start_timer_event(wartime_stop_event, wartime_duration)
+            war_timer = PhaseTimer(wartime_stop_event, wartime_duration).start()
             
             logger.info(f"[+] Wartime started for config {config_name}: Running for {format_duration(wartime_duration)}...")
             
             # Run wartime detection for this specific configuration with clean state
-            results, logcount, tunnel_count, seen_tunnels, config_alldomains, counts = run_wartime(
-                active_detectors, config_log_generator, config_tunneling_domains_set, global_allowlist
-            )
+            try:
+                results, logcount, tunnel_count, seen_tunnels, config_alldomains, counts = run_wartime(
+                    active_detectors, config_log_generator, config_tunneling_domains_set, global_allowlist
+                )
+            finally:
+                war_timer.cancel()
             
             # Store results for this configuration
             all_results.append({
@@ -1257,13 +1280,16 @@ def run_wartime_phase(
         wartime_log_generator = readjson(str(LOGFILE), timeout_seconds=60, max_timeouts=2)
         
         wartime_stop_event.clear()
-        start_timer_event(wartime_stop_event, wartime_duration)
+        war_timer = PhaseTimer(wartime_stop_event, wartime_duration).start()
         
         # Run wartime (will block until stop event is set or all tunnels detected).
         # The TN/FPR universe is the set of domains seen in this wartime only.
-        results, logcount, tunnel_count, seen_tunnels, alldomains, counts = run_wartime(
-            active_detectors, wartime_log_generator, tunneling_domains_set, global_allowlist
-        )
+        try:
+            results, logcount, tunnel_count, seen_tunnels, alldomains, counts = run_wartime(
+                active_detectors, wartime_log_generator, tunneling_domains_set, global_allowlist
+            )
+        finally:
+            war_timer.cancel()
         
         end_timestamp = datetime.now()
         

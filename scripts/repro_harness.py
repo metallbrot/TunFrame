@@ -109,11 +109,13 @@ while n < 300:
 print("6) readjson delivered 300 ready lines in %.2f s (%.0f lines/s max)" % (time.time() - t0, 300 / (time.time() - t0)))
 
 e = threading.Event()
-main.start_timer_event(e, 0.5)          # config 1 timer (config ends early)
+t1 = main.PhaseTimer(e, 0.3).start()      # config 1 timer
+t1.cancel()                                # config 1 ended early
 e.clear()
-t0 = time.time(); main.start_timer_event(e, 2.0)   # config 2 should run 2.0 s
-e.wait(5)
-print("7) config 2 stop event fired after %.2f s although its timer was 2.0 s" % (time.time() - t0))
+t0 = time.time(); t2 = main.PhaseTimer(e, 1.0).start()   # config 2 should run 1.0 s
+e.wait(3)
+el = time.time() - t0
+check("M8 old timer cannot stop next phase", 0.9 <= el <= 1.5, "config 2 stop event fired after %.2f s (expected ~1.0 s)" % el)
 
 import tldextract
 try:

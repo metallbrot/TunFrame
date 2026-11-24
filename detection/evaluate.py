@@ -53,8 +53,8 @@ def run_peacetime(detectors: list, log_generator, tunneling_domains: set) -> tup
     alldomains = set()
     peace_logcount = 0
     
-    peacetime_stop_event.clear()
-    
+    # The caller clears peacetime_stop_event before arming the phase timer;
+    # clearing it here would swallow a stop that was already signalled.
     while not peacetime_stop_event.is_set():
         try:
             logline = next(log_generator)
@@ -118,8 +118,8 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
     tunnel_count = 0
     counts = {"total_queries": 0, "total_responses": 0, "tunnel_queries": 0, "tunnel_responses": 0}
     
-    wartime_stop_event.clear()
-    
+    # The caller clears wartime_stop_event before arming the phase timer;
+    # clearing it here would swallow a stop that was already signalled.
     while not wartime_stop_event.is_set():
         try:
             logline = next(log_generator)
