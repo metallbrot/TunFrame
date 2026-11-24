@@ -253,10 +253,7 @@ try:
 except Exception as ex:
     print("8) tldextract.extract(None) raises", type(ex).__name__, "- run_peacetime has no None guard")
 
-try:
-    import detection.detector_base.aggregator
-    print("9) aggregator imports fine")
-except Exception as ex:
-    print("9) aggregator import fails:", type(ex).__name__, ex)
+check("D3 broken aggregator module removed", not os.path.exists(os.path.join(ROOT, "detection", "detector_base", "aggregator.py")),
+      "detection/detector_base/aggregator.py removed (it had no importers)")
 
 sys.exit(1 if FAILS else 0)
