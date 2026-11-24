@@ -401,7 +401,8 @@ def build_and_save_metadata(
     cfg: dict,
     counts: dict = None,
     status: str = "completed",
-    status_reason: str = ""
+    status_reason: str = "",
+    dnsexfil_config: dict = None
 ):
     """Build metadata and save results to file.
 
@@ -468,12 +469,57 @@ def build_and_save_metadata(
             "detector_path": str(DETECTOR_PATH)
         },
         "complete_config": cfg,
+        "dnsexfiltrator_config": dnsexfil_config,
+        "run_info": get_run_info(),
         "run_status": {"status": status, "reason": status_reason},
     }
     save_results(str(results_file), results, metadata)
 
 
-def save_status_result(cfg: dict, config_name: str, status: str, reason: str) -> Path:
+_RUN_INFO = None
+
+
+def _command_output(cmd: list) -> str:
+    """Return the stripped stdout of a command, or an empty string on failure."""
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, cwd=PROJECT_ROOT)
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def get_run_info() -> dict:
+    """Collect code and tool versions for reproducibility (cached per run).
+
+    Returns:
+        dict: git commit and dirty flag, Python version, versions of the Python
+        libraries the harness depends on, and Docker / Docker Compose versions.
+        Unavailable values are empty strings.
+    """
+    global _RUN_INFO
+    if _RUN_INFO is None:
+        try:
+            from importlib.metadata import version as _pkg_version
+        except ImportError:  # pragma: no cover
+            _pkg_version = None
+        libraries = {}
+        for package in ("tldextract", "fqdn", "PyYAML"):
+            try:
+                libraries[package] = _pkg_version(package) if _pkg_version else ""
+            except Exception:
+                libraries[package] = ""
+        _RUN_INFO = {
+            "git_commit": _command_output(["git", "rev-parse", "HEAD"]),
+            "git_dirty": bool(_command_output(["git", "status", "--porcelain", "--untracked-files=no"])),
+            "python_version": sys.version.split()[0],
+            "libraries": libraries,
+            "docker_version": _command_output(["docker", "--version"]),
+            "docker_compose_version": _command_output(["docker", "compose", "version", "--short"]),
+        }
+    return _RUN_INFO
+
+
+def save_status_result(cfg: dict, config_name: str, status: str, reason: str, dnsexfil_config: dict = None) -> Path:
     """Write a results file for a configuration that produced no measurements.
 
     Every requested configuration leaves a results file, so gaps in a sweep
@@ -484,6 +530,7 @@ def save_status_result(cfg: dict, config_name: str, status: str, reason: str) ->
         config_name: Name of the DNSExfiltrator configuration (or "wartime").
         status: "skipped" (never started) or "failed" (error while starting).
         reason: Human-readable reason.
+        dnsexfil_config: The DNSExfiltrator configuration, if any.
 
     Returns:
         Path: The written results file.
@@ -498,6 +545,8 @@ def save_status_result(cfg: dict, config_name: str, status: str, reason: str) ->
             "timestamp": datetime.now().isoformat(),
         },
         "complete_config": cfg,
+        "dnsexfiltrator_config": dnsexfil_config,
+        "run_info": get_run_info(),
         "run_status": {"status": status, "reason": reason},
     }
     logger.warning(f"[!] Configuration {config_name} {status}: {reason}")
@@ -1036,7 +1085,8 @@ def run_wartime_phase(
             logger.warning(f"[!] No DNSExfiltrator configurations will be run")
             for skipped in requested_configs:
                 save_status_result(cfg, skipped.get('name', 'config'), "skipped",
-                                   "DNSExfiltrator readiness checks failed (resolver, containers or connectivity); see console log")
+                                   "DNSExfiltrator readiness checks failed (resolver, containers or connectivity); see console log",
+                                   dnsexfil_config=skipped)
         else:
             logger.info(f"[+] Running {len(dnsexfil_configs)} DNSExfiltrator configurations sequentially")
             
@@ -1064,7 +1114,7 @@ def run_wartime_phase(
                     time.sleep(5)
                 except Exception as e:
                     logger.error(f"[!] Failed to recreate containers: {e}")
-                    save_status_result(cfg, config_name, "failed", f"could not recreate DNSExfiltrator containers: {e}")
+                    save_status_result(cfg, config_name, "failed", f"could not recreate DNSExfiltrator containers: {e}", dnsexfil_config=config)
                     continue
             
             domains = config.get('domains', [])
@@ -1151,7 +1201,7 @@ def run_wartime_phase(
             if not check_process_running("dnsexfiltrator-server", "dnsExfiltrator.py"):
                 logger.error(f"[!] DNSExfiltrator server failed to start or crashed!")
                 logger.error(f"[!] Skipping configuration: {config_name}")
-                save_status_result(cfg, config_name, "skipped", "DNSExfiltrator server failed to start or crashed")
+                save_status_result(cfg, config_name, "skipped", "DNSExfiltrator server failed to start or crashed", dnsexfil_config=config)
                 continue
             
             # Start client for this configuration
@@ -1281,7 +1331,7 @@ def run_wartime_phase(
             if not check_process_running("dnsexfiltrator-client", "DNSExfiltrator.exe"):
                 logger.error(f"[!] DNSExfiltrator client failed to start or crashed!")
                 logger.error(f"[!] Skipping configuration: {config_name}")
-                save_status_result(cfg, config_name, "skipped", "DNSExfiltrator client failed to start or crashed")
+                save_status_result(cfg, config_name, "skipped", "DNSExfiltrator client failed to start or crashed", dnsexfil_config=config)
                 continue
             
             # Give some time for the client to start generating traffic
@@ -1290,11 +1340,11 @@ def run_wartime_phase(
             # Final verification that both processes are running before starting detection
             if not check_process_running("dnsexfiltrator-server", "dnsExfiltrator.py"):
                 logger.error(f"[!] DNSExfiltrator server is not running! Skipping config: {config_name}")
-                save_status_result(cfg, config_name, "skipped", "DNSExfiltrator server stopped before wartime")
+                save_status_result(cfg, config_name, "skipped", "DNSExfiltrator server stopped before wartime", dnsexfil_config=config)
                 continue
             if not check_process_running("dnsexfiltrator-client", "DNSExfiltrator.exe"):
                 logger.error(f"[!] DNSExfiltrator client is not running! Skipping config: {config_name}")
-                save_status_result(cfg, config_name, "skipped", "DNSExfiltrator client stopped before wartime")
+                save_status_result(cfg, config_name, "skipped", "DNSExfiltrator client stopped before wartime", dnsexfil_config=config)
                 continue
             
             logger.info(f"[+] Both DNSExfiltrator server and client are confirmed running")
@@ -1357,7 +1407,8 @@ def run_wartime_phase(
                 server_ip=server_ip,
                 public_resolver=public_resolver,
                 cfg=cfg,
-                counts=counts
+                counts=counts,
+                dnsexfil_config=dict(config, expansion_factor_used=config_expansion_factor(config))
             )
             
             logger.info(f"[+] Completed configuration: {config_name}")

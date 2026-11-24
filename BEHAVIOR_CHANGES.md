@@ -242,3 +242,15 @@ Entries are added in the commit that introduces the change.
 - **Affected outputs**: new key `run_status`; additional result files for
   skipped configs. Analysis scripts should filter on
   `run_status.status == "completed"`.
+
+## C4: Results files are self-contained
+
+- **Old**: A per-config results file identified its DNSExfiltrator parameters
+  only through its file name and carried no code or tool versions.
+- **New**: Every results file adds `metadata.dnsexfiltrator_config` (the filled
+  config dict, including `expansion_factor_used`; `null` in replay mode) and
+  `metadata.run_info`: git commit, dirty flag (tracked files), Python version,
+  versions of tldextract, fqdn and PyYAML, Docker and Docker Compose versions.
+- **Affected outputs**: new metadata keys only.
+- **Not covered**: pcap/allowlist hashes, the tldextract public-suffix-list
+  snapshot and Docker image digests (`:latest` tags) are still not recorded.

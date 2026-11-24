@@ -110,6 +110,9 @@ main.RESULTS_DIR = _pl.Path(_tf.mkdtemp())
 f3 = main.save_status_result({'global': {'name': 'T'}}, 'cfgX', 'skipped', 'client failed')
 d3 = json.load(open(f3))
 main.RESULTS_DIR = _old_dir
+ri = d3['metadata']['run_info']
+check("C4 results are self-contained", len(ri['git_commit']) == 40 and ri['libraries']['tldextract'] != '' and 'dnsexfiltrator_config' in d3['metadata'],
+      "git %s dirty=%s, tldextract %s, docker '%s'" % (ri['git_commit'][:8], ri['git_dirty'], ri['libraries']['tldextract'], ri['docker_version']))
 check("C3 skipped configs leave a results file", d3['metadata']['run_status'] == {'status': 'skipped', 'reason': 'client failed'} and d3['detectors'] == [],
       "written %s with status %s" % (f3.name, d3['metadata']['run_status']['status']))
 
