@@ -229,3 +229,16 @@ Entries are added in the commit that introduces the change.
   `parameter` or a profile raise `ValueError` at startup.
 - **Affected outputs**: profile configs now run with the baseline's domains
   and unspecified values.
+
+## C3: Every configuration leaves a results file with a status
+
+- **Old**: A failed DNSExfiltrator readiness check skipped the whole wartime
+  and wrote no results file; a config that hit a `continue` (server or client
+  not starting) left no trace outside the console log.
+- **New**: Every results file carries `metadata.run_status`
+  (`{"status": "completed" | "skipped" | "failed", "reason": ...}`).
+  Skipped or failed configs are written by `save_status_result()` as
+  `results_<name>_<config>_<status>_<ts>.json` with an empty `detectors` list.
+- **Affected outputs**: new key `run_status`; additional result files for
+  skipped configs. Analysis scripts should filter on
+  `run_status.status == "completed"`.

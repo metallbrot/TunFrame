@@ -399,7 +399,9 @@ def build_and_save_metadata(
     server_ip: str,
     public_resolver: str,
     cfg: dict,
-    counts: dict = None
+    counts: dict = None,
+    status: str = "completed",
+    status_reason: str = ""
 ):
     """Build metadata and save results to file.
 
@@ -465,9 +467,42 @@ def build_and_save_metadata(
             "public_resolver": public_resolver,
             "detector_path": str(DETECTOR_PATH)
         },
-        "complete_config": cfg
+        "complete_config": cfg,
+        "run_status": {"status": status, "reason": status_reason},
     }
     save_results(str(results_file), results, metadata)
+
+
+def save_status_result(cfg: dict, config_name: str, status: str, reason: str) -> Path:
+    """Write a results file for a configuration that produced no measurements.
+
+    Every requested configuration leaves a results file, so gaps in a sweep
+    are visible in the data and not only in the console log.
+
+    Args:
+        cfg: Complete experiment configuration.
+        config_name: Name of the DNSExfiltrator configuration (or "wartime").
+        status: "skipped" (never started) or "failed" (error while starting).
+        reason: Human-readable reason.
+
+    Returns:
+        Path: The written results file.
+    """
+    name = cfg_safe_get(cfg, ['global', 'name'], 'experiment')
+    results_file = RESULTS_DIR / f"results_{name}_{config_name}_{status}_{int(time.time())}.json"
+    metadata = {
+        "experiment": {
+            "name": name,
+            "description": cfg_safe_get(cfg, ['global', 'description']),
+            "config_name": config_name,
+            "timestamp": datetime.now().isoformat(),
+        },
+        "complete_config": cfg,
+        "run_status": {"status": status, "reason": reason},
+    }
+    logger.warning(f"[!] Configuration {config_name} {status}: {reason}")
+    save_results(str(results_file), [], metadata)
+    return results_file
 
 
 # Default values for every DNSExfiltrator configuration.
@@ -867,6 +902,10 @@ def run_wartime_phase(
             logger.info(f"[+] Tunnel replay started - running for {format_duration(wartime_duration)}...")
         # Note: tcpreplay runs in background, no direct verification possible
     
+    # Configurations requested by the user; each one gets a results file,
+    # also when it is skipped.
+    requested_configs = list(dnsexfil_configs or [])
+
     # Handle DNSExfiltrator configurations sequentially
     if dnsexfil_enabled and dnsexfil_configs:
         # Verify resolver is running and accessible before starting DNSExfiltrator
@@ -995,6 +1034,9 @@ def run_wartime_phase(
 
         if not dnsexfil_configs:
             logger.warning(f"[!] No DNSExfiltrator configurations will be run")
+            for skipped in requested_configs:
+                save_status_result(cfg, skipped.get('name', 'config'), "skipped",
+                                   "DNSExfiltrator readiness checks failed (resolver, containers or connectivity); see console log")
         else:
             logger.info(f"[+] Running {len(dnsexfil_configs)} DNSExfiltrator configurations sequentially")
             
@@ -1022,6 +1064,7 @@ def run_wartime_phase(
                     time.sleep(5)
                 except Exception as e:
                     logger.error(f"[!] Failed to recreate containers: {e}")
+                    save_status_result(cfg, config_name, "failed", f"could not recreate DNSExfiltrator containers: {e}")
                     continue
             
             domains = config.get('domains', [])
@@ -1108,6 +1151,7 @@ def run_wartime_phase(
             if not check_process_running("dnsexfiltrator-server", "dnsExfiltrator.py"):
                 logger.error(f"[!] DNSExfiltrator server failed to start or crashed!")
                 logger.error(f"[!] Skipping configuration: {config_name}")
+                save_status_result(cfg, config_name, "skipped", "DNSExfiltrator server failed to start or crashed")
                 continue
             
             # Start client for this configuration
@@ -1237,6 +1281,7 @@ def run_wartime_phase(
             if not check_process_running("dnsexfiltrator-client", "DNSExfiltrator.exe"):
                 logger.error(f"[!] DNSExfiltrator client failed to start or crashed!")
                 logger.error(f"[!] Skipping configuration: {config_name}")
+                save_status_result(cfg, config_name, "skipped", "DNSExfiltrator client failed to start or crashed")
                 continue
             
             # Give some time for the client to start generating traffic
@@ -1245,9 +1290,11 @@ def run_wartime_phase(
             # Final verification that both processes are running before starting detection
             if not check_process_running("dnsexfiltrator-server", "dnsExfiltrator.py"):
                 logger.error(f"[!] DNSExfiltrator server is not running! Skipping config: {config_name}")
+                save_status_result(cfg, config_name, "skipped", "DNSExfiltrator server stopped before wartime")
                 continue
             if not check_process_running("dnsexfiltrator-client", "DNSExfiltrator.exe"):
                 logger.error(f"[!] DNSExfiltrator client is not running! Skipping config: {config_name}")
+                save_status_result(cfg, config_name, "skipped", "DNSExfiltrator client stopped before wartime")
                 continue
             
             logger.info(f"[+] Both DNSExfiltrator server and client are confirmed running")

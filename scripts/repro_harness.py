@@ -104,6 +104,15 @@ except ValueError:
 check("C2 profiles inherit baseline; params validated", ok_inherit and ok_validate,
       "profile p=%s; typo rejected=%s" % ({k: p[k] for k in ('domains', 'throttle', 'label_max_size', 'encoding')}, ok_validate))
 
+import tempfile as _tf, pathlib as _pl
+_old_dir = main.RESULTS_DIR
+main.RESULTS_DIR = _pl.Path(_tf.mkdtemp())
+f3 = main.save_status_result({'global': {'name': 'T'}}, 'cfgX', 'skipped', 'client failed')
+d3 = json.load(open(f3))
+main.RESULTS_DIR = _old_dir
+check("C3 skipped configs leave a results file", d3['metadata']['run_status'] == {'status': 'skipped', 'reason': 'client failed'} and d3['detectors'] == [],
+      "written %s with status %s" % (f3.name, d3['metadata']['run_status']['status']))
+
 dets = [FlagTunnel()]
 cfg1 = [evt('x%d.tunnel.com' % i) for i in range(5)] + [evt('a.com')]
 ev.wartime_stop_event.clear()
