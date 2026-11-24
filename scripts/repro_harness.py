@@ -100,13 +100,15 @@ check("M2 wartime universe excludes peacetime domains", len(res[4]) == 4 and abs
       "all_domains=%d (4 wartime domains), FPR=%.3f (expected 0.250)" % (len(res[4]), res[0][0]['fpr']))
 
 with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
-    for i in range(300): f.write(json.dumps(evt('q%d.example.com' % i)) + "\n")
+    for i in range(3000): f.write(json.dumps(evt('q%d.example.com' % i)) + "\n")
     path = f.name
 g = readjson(path, timeout_seconds=60, max_timeouts=2)
 t0 = time.time(); n = 0
-while n < 300:
+while n < 3000:
     if next(g) is not None: n += 1
-print("6) readjson delivered 300 ready lines in %.2f s (%.0f lines/s max)" % (time.time() - t0, 300 / (time.time() - t0)))
+rate = 3000 / max(time.time() - t0, 1e-9)
+check("M9 reader reads bursts", rate > 1000, "readjson delivered %.0f lines/s (expected > 1000)" % rate)
+os.unlink(path)
 
 e = threading.Event()
 t1 = main.PhaseTimer(e, 0.3).start()      # config 1 timer

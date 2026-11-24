@@ -112,3 +112,16 @@ Entries are added in the commit that introduces the change.
   the timer.
 - **Affected outputs**: wartime length (and therefore every metric) of configs
   that followed an early-ending config.
+
+## M9: Log reader no longer sleeps after every line
+
+- **Old**: `readjson()` slept 10 ms after every line, capping ingestion at
+  roughly 80-100 lines/s before any detector cost. With benign replay at
+  realistic rates, each wall-clock phase evaluated only an early slice of the
+  logged traffic and discarded the unread rest.
+- **New**: Buffered lines are read back to back; the reader sleeps 10 ms only
+  when no new data is available.
+- **Affected outputs**: `total_loglines`, all line and query counts, and every
+  metric of phases whose log grew faster than ~80 lines/s. Results become a
+  function of the traffic actually generated in the phase window rather than
+  of the reader speed.

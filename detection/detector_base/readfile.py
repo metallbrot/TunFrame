@@ -31,8 +31,12 @@ def readjson(log_file, timeout_seconds=5, max_timeouts=3):
                 yield None  # Signal timeout to caller
                 last_data_time = time.time()
             
-            # Try to read a line
+            # Try to read a line. Buffered lines are read back to back; the
+            # reader only sleeps when no data is available.
             line = f.readline()
+            if not line:
+                time.sleep(0.01)
+                continue
             if line:
                 # Successfully read a line
                 consecutive_timeouts = 0
@@ -44,6 +48,3 @@ def readjson(log_file, timeout_seconds=5, max_timeouts=3):
                 except json.JSONDecodeError:
                     # Skip invalid JSON lines
                     continue
-            
-            # Small sleep to prevent busy waiting and allow file to be written
-            time.sleep(0.01)
