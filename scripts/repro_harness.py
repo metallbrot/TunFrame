@@ -251,11 +251,14 @@ check("D4 single reset API", not hasattr(d4, 'full_reset') and not hasattr(d4, '
       "reset() keeps allowlist, clears alarms/leakage; old reset names removed")
 check("D2 detectors do not import main", _out == "False", "'main' imported when loading a detector: %s" % _out)
 
-import tldextract
+noq = evt('x.org'); del noq['dns']['qname']
+ev.peacetime_stop_event.clear()
 try:
-    tldextract.extract(None); print("8) tldextract.extract(None) did not raise")
-except Exception as ex:
-    print("8) tldextract.extract(None) raises", type(ex).__name__, "- run_peacetime has no None guard")
+    pc, _ = ev.run_peacetime([Never()], gen([noq, evt('ok.net')]), {'tunnel.com'})
+    d5 = pc == 1
+except AttributeError:
+    d5 = False
+check("D5 peacetime skips events without qname", d5, "event without qname skipped, valid event processed")
 
 check("D3 broken aggregator module removed", not os.path.exists(os.path.join(ROOT, "detection", "detector_base", "aggregator.py")),
       "detection/detector_base/aggregator.py removed (it had no importers)")

@@ -116,6 +116,9 @@ def _run_peacetime(detectors: list, log_generator, tunneling_domains: set) -> tu
         # Idle poll: the reader yields None so the stop event is re-checked.
         if logline is None:
             continue
+        # Same guard as run_wartime(): events without a query name are skipped.
+        if get_fqdn(logline) is None:
+            continue
 
         domain = get_registered_domain(logline)
         if domain in tunneling_domains:
