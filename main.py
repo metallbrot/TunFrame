@@ -1166,7 +1166,7 @@ def run_wartime_phase(
             
             # Run wartime detection for this specific configuration with clean state
             results, logcount, tunnel_count, seen_tunnels, config_alldomains = run_wartime(
-                active_detectors, config_log_generator, config_tunneling_domains_set, global_allowlist, config_alldomains
+                active_detectors, config_log_generator, config_tunneling_domains_set, global_allowlist
             )
             
             # Store results for this configuration
@@ -1240,9 +1240,10 @@ def run_wartime_phase(
         wartime_stop_event.clear()
         start_timer_event(wartime_stop_event, wartime_duration)
         
-        # Run wartime (will block until stop event is set or all tunnels detected)
+        # Run wartime (will block until stop event is set or all tunnels detected).
+        # The TN/FPR universe is the set of domains seen in this wartime only.
         results, logcount, tunnel_count, seen_tunnels, alldomains = run_wartime(
-            active_detectors, wartime_log_generator, tunneling_domains_set, global_allowlist, alldomains
+            active_detectors, wartime_log_generator, tunneling_domains_set, global_allowlist
         )
         
         end_timestamp = datetime.now()

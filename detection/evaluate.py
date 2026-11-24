@@ -91,12 +91,24 @@ def run_peacetime(detectors: list, log_generator, tunneling_domains: set) -> tup
     return peace_logcount, alldomains
 
 
-def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_allowlist: set, alldomains: set) -> tuple:
-    """Run wartime phase to detect tunneling.
-    
+def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_allowlist: set) -> tuple:
+    """Run one wartime window and evaluate all detectors on it.
+
+    The domain universe used for TN and FPR contains only the registered
+    domains seen in this wartime window. Domains seen during peacetime or in
+    other DNSExfiltrator configurations are never part of it.
+
+    Args:
+        detectors: Detector instances to feed.
+        log_generator: Generator yielding parsed log events (or None when idle).
+        tunneling_domains: Ground-truth tunneling domains for this window.
+        global_allowlist: Global allowlist (reported per detector).
+
     Returns:
-        tuple: (results, logcount, tunnel_count, seen_tunnels, alldomains)
+        tuple: (results, logcount, tunnel_count, seen_tunnels, alldomains), where
+        ``alldomains`` is the set of registered domains seen in this window.
     """
+    alldomains = set()
     tunneling_domains_seen = {domain: False for domain in tunneling_domains}
     
     logcount = 0

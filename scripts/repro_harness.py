@@ -45,10 +45,10 @@ def gen(events):
 dets = [FlagTunnel()]
 cfg1 = [evt('x%d.tunnel.com' % i) for i in range(5)] + [evt('a.com')]
 ev.wartime_stop_event.clear()
-res1 = ev.run_wartime(dets, gen(cfg1), {'tunnel.com'}, set(), set())
+res1 = ev.run_wartime(dets, gen(cfg1), {'tunnel.com'}, set())
 cfg2 = [evt('benign%d.org' % i) for i in range(3)] + [evt('y%d.tunnel.com' % i) for i in range(5)]
 ev.wartime_stop_event.clear()
-res2 = ev.run_wartime(dets, gen(cfg2), {'tunnel.com'}, set(), set())
+res2 = ev.run_wartime(dets, gen(cfg2), {'tunnel.com'}, set())
 print("4) config1 logcount=%d, config2 logcount=%d of %d lines (stopped early), config2 processed_lines=%d, config2 tp=%d with no tunnel line read" % (
       res1[1], res2[1], len(cfg2), res2[0][0]['processed_lines'], res2[0][0]['tp']))
 
@@ -60,11 +60,9 @@ ev.generate_allowlists(det, set(), plc)
 det[0].alarms = {'war1.org'}  # pretend one false positive in wartime
 war = [evt('war%d.org' % i) for i in range(4)]
 ev.wartime_stop_event.clear()
-res = ev.run_wartime(det, gen(war), {'tunnel.com'}, set(), pdomains)   # same call pattern as main.py
-fresh = Never(); fresh.alarms = {'war1.org'}
-ref = fresh.evaluate(set(), {'war%d.org' % i for i in range(4)}, 4, 0, set())
-print("5) wartime-only domains=4; all_domains passed to evaluate=%d; FPR reported=%.3f vs FPR on wartime domains=%.3f" % (
-      len(res[4]), res[0][0]['fpr'], ref['fpr']))
+res = ev.run_wartime(det, gen(war), {'tunnel.com'}, set())
+check("M2 wartime universe excludes peacetime domains", len(res[4]) == 4 and abs(res[0][0]['fpr'] - 0.25) < 1e-9,
+      "all_domains=%d (4 wartime domains), FPR=%.3f (expected 0.250)" % (len(res[4]), res[0][0]['fpr']))
 
 with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
     for i in range(300): f.write(json.dumps(evt('q%d.example.com' % i)) + "\n")
