@@ -72,6 +72,16 @@ r6 = d.evaluate(set(), {'allowed.com', 'other.org'}, 4, 0, set())
 check("M6 avg time over detect() calls", d.detect_calls == 1 and abs(r6['avg_process_time_ms'] - d.total_process_time * 1000) < 1e-9,
       "detect_calls=%d of %d lines (expected 1)" % (d.detect_calls, d.processed_lines))
 
+d = Never(); d.allowlist = {'tunnel.com'}
+d.process_line(evt('abcdef.tunnel.com'), True)
+d.process_line(resp('abcdef.tunnel.com', [{"rdatatype": "A", "rdata": "1.2.3.4"}]), True)
+r11 = d.evaluate({'tunnel.com'}, {'tunnel.com'}, 2, 1, set(), tunneling_responses=1)
+check("M11 allowlisted tunnel traffic accounted", (r11['allowlisted_tunnel_queries'], r11['allowlisted_tunnel_responses'],
+      r11['allowlisted_tunnel_up_bytes'], r11['allowlisted_tunnel_down_bytes'], r11['tunneling_missed'], d.detect_calls) == (1, 1, 6, 4, 0, 0),
+      "allowlisted q=%d r=%d up=%d down=%d; missed=%d detect_calls=%d (expected 1,1,6,4,0,0)" % (
+      r11['allowlisted_tunnel_queries'], r11['allowlisted_tunnel_responses'], r11['allowlisted_tunnel_up_bytes'],
+      r11['allowlisted_tunnel_down_bytes'], r11['tunneling_missed'], d.detect_calls))
+
 dets = [FlagTunnel()]
 cfg1 = [evt('x%d.tunnel.com' % i) for i in range(5)] + [evt('a.com')]
 ev.wartime_stop_event.clear()

@@ -19,6 +19,11 @@ class Detector(ABC):
         self.tunneling_missed_responses = 0
         self.lv_up = 0
         self.lv_down = 0
+        self.allowlisted_tunnel_lines = 0
+        self.allowlisted_tunnel_queries = 0
+        self.allowlisted_tunnel_responses = 0
+        self.allowlisted_tunnel_lv_up = 0
+        self.allowlisted_tunnel_lv_down = 0
         self.allowlist = set()
         self.alarms = set()
 
@@ -36,6 +41,11 @@ class Detector(ABC):
         self.tunneling_missed_responses = 0
         self.lv_up = 0
         self.lv_down = 0
+        self.allowlisted_tunnel_lines = 0
+        self.allowlisted_tunnel_queries = 0
+        self.allowlisted_tunnel_responses = 0
+        self.allowlisted_tunnel_lv_up = 0
+        self.allowlisted_tunnel_lv_down = 0
         self.allowlist = set()
         self.alarms = set()
 
@@ -63,6 +73,11 @@ class Detector(ABC):
         self.tunneling_missed_responses = 0
         self.lv_up = 0
         self.lv_down = 0
+        self.allowlisted_tunnel_lines = 0
+        self.allowlisted_tunnel_queries = 0
+        self.allowlisted_tunnel_responses = 0
+        self.allowlisted_tunnel_lv_up = 0
+        self.allowlisted_tunnel_lv_down = 0
         self.alarms = set()
         self.on_phase_reset()
 
@@ -91,6 +106,17 @@ class Detector(ABC):
                     # Uplink leakage: full encoded payload of the query name.
                     self.lv_up += query_payload_bytes(logline)
             self.total_process_time += timediff
+        elif istunnel:
+            # Allowlisted tunneling traffic never reaches detect() and can never
+            # raise an alarm. Account for it separately so the run stays fully
+            # accounted; the detection decision itself is unchanged.
+            self.allowlisted_tunnel_lines += 1
+            if is_response(logline):
+                self.allowlisted_tunnel_responses += 1
+                self.allowlisted_tunnel_lv_down += answer_payload_bytes(logline)
+            else:
+                self.allowlisted_tunnel_queries += 1
+                self.allowlisted_tunnel_lv_up += query_payload_bytes(logline)
         
         self.processed_lines += 1
 
@@ -159,6 +185,10 @@ class Detector(ABC):
         logger.info(f"Total tunnel queries seen: {tunneling_queries} (responses: {tunneling_responses})")
         logger.info(f"Tunnel queries missed: {self.tunneling_missed} (responses: {self.tunneling_missed_responses})")
         logger.info(f"Traffic volume down: {format_bytes(self.lv_down)}, Traffic volume up: {format_bytes(self.lv_up)}")
+        if self.allowlisted_tunnel_lines:
+            logger.info(f"Allowlisted tunnel traffic (never inspected): {self.allowlisted_tunnel_queries} queries, "
+                        f"{self.allowlisted_tunnel_responses} responses, up {format_bytes(self.allowlisted_tunnel_lv_up)}, "
+                        f"down {format_bytes(self.allowlisted_tunnel_lv_down)}")
         logger.info(f"Estimated real traffic volume up: {format_bytes(self.lv_up / expansion_factor)}")
         
         if alarms:
@@ -219,6 +249,11 @@ class Detector(ABC):
             "tunneling_missed_responses": self.tunneling_missed_responses,
             "traffic_volume_up_bytes": self.lv_up,
             "traffic_volume_down_bytes": self.lv_down,
+            "allowlisted_tunnel_lines": self.allowlisted_tunnel_lines,
+            "allowlisted_tunnel_queries": self.allowlisted_tunnel_queries,
+            "allowlisted_tunnel_responses": self.allowlisted_tunnel_responses,
+            "allowlisted_tunnel_up_bytes": self.allowlisted_tunnel_lv_up,
+            "allowlisted_tunnel_down_bytes": self.allowlisted_tunnel_lv_down,
             "estimated_real_traffic_up_bytes": self.lv_up / expansion_factor,
             
             # Domain statistics

@@ -142,3 +142,17 @@ Entries are added in the commit that introduces the change.
   section 3.4.
 - **Affected outputs**: all benign-traffic metrics (FP, TN, FPR, line counts)
   of every run with benign replay enabled. Wildcard replay: see C6.
+
+## M11: Allowlisted tunneling traffic is accounted separately
+
+- **Old**: Lines of a tunneling domain that was on a detector's allowlist
+  skipped all accounting. Leakage and missed counts read 0 although the
+  traffic passed uninspected.
+- **New**: The detection decision is unchanged (allowlisted lines still never
+  reach `detect()` and cannot raise alarms). Such lines are counted in new
+  result keys: `allowlisted_tunnel_lines`, `allowlisted_tunnel_queries`,
+  `allowlisted_tunnel_responses`, `allowlisted_tunnel_up_bytes`,
+  `allowlisted_tunnel_down_bytes`. Leakage there uses the same definitions as
+  M3/M4. `tunneling_missed`, `traffic_volume_up_bytes` and
+  `traffic_volume_down_bytes` keep covering inspected traffic only.
+- **Affected outputs**: new keys only; existing values unchanged.
