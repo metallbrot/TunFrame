@@ -998,9 +998,16 @@ def run_wartime_phase(
     public_resolver: str,
     cfg: dict,
     results_file: Path,
-    dnsexfil_configs: list = None
+    dnsexfil_configs: list = None,
+    results_sink: list = None
 ):
-    """Wartime phase: Start tunnel traffic, run wartime, build and save results."""
+    """Wartime phase: Start tunnel traffic, run wartime, build and save results.
+
+    Completed windows are appended to ``results_sink`` as soon as they finish,
+    so the caller still has them after an interrupt. A window ended by Ctrl+C
+    is evaluated, saved with status ``interrupted``, and the interrupt is then
+    re-raised.
+    """
     logger.info("\n" + "="*60)
     logger.info("WARTIME PHASE")
     logger.info("="*60)
@@ -1010,7 +1017,7 @@ def run_wartime_phase(
     tunneling_pps = cfg_safe_get(cfg, ["traffic", "tunnel", "pps"])
     dnsexfil_enabled = cfg_safe_get(cfg, ['dnsexfiltrator', 'enabled'], False)
 
-    all_results = []
+    all_results = results_sink if results_sink is not None else []
 
     # Never truncate the log while the collector writes to it: record where
     # wartime starts and read only from this offset.
@@ -1499,8 +1506,12 @@ def run_wartime_phase(
                 public_resolver=public_resolver,
                 cfg=cfg,
                 counts=counts,
-                dnsexfil_config=dict(config, expansion_factor_used=config_expansion_factor(config))
+                dnsexfil_config=dict(config, expansion_factor_used=config_expansion_factor(config)),
+                status="interrupted" if counts.get("interrupted") else "completed",
+                status_reason="Ctrl+C during wartime; partial window" if counts.get("interrupted") else ""
             )
+            if counts.get("interrupted"):
+                raise KeyboardInterrupt
             
             logger.info(f"[+] Completed configuration: {config_name}")
             
@@ -1576,8 +1587,12 @@ def run_wartime_phase(
             server_ip=server_ip,
             public_resolver=public_resolver,
             cfg=cfg,
-            counts=counts
+            counts=counts,
+            status="interrupted" if counts.get("interrupted") else "completed",
+            status_reason="Ctrl+C during wartime; partial window" if counts.get("interrupted") else ""
         )
+        if counts.get("interrupted"):
+            raise KeyboardInterrupt
     
     return alldomains, all_results
 
@@ -1619,10 +1634,11 @@ def main():
         
 
         # Run wartime phase(s)
-        alldomains, all_experiment_results = run_wartime_phase(
+        alldomains, _ = run_wartime_phase(
             wartime_duration, peacetime_duration, tunneling_domains_set, global_allowlist,
             active_detectors, log_generator, alldomains, start_timestamp,
-            server_ip, public_resolver, cfg, results_file, dnsexfil_configs
+            server_ip, public_resolver, cfg, results_file, dnsexfil_configs,
+            results_sink=all_experiment_results
         )
 
         compose_down()

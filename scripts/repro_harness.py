@@ -270,6 +270,13 @@ except RuntimeError:
     d7 = True
 check("D7 load_detectors returns Detector instances; missing requested detector fails", [type(x).__name__ for x in loaded] == ["MarkAll"] and isinstance(loaded[0], Detector) and d7,
       "loaded %s; missing requested detector raised=%s" % ([type(x).__name__ for x in loaded], d7))
+def interrupting():
+    yield evt('aa.tunnel.com'); yield evt('x.org')
+    raise KeyboardInterrupt
+ev.wartime_stop_event.clear()
+o8 = ev.run_wartime([Never()], interrupting(), {'tunnel.com'}, set())
+check("D8 interrupt yields partial evaluation", o8[5]['interrupted'] and o8[1] == 2 and o8[0][0]['fn'] == 1,
+      "interrupted=%s, %d lines evaluated, fn=%d" % (o8[5]['interrupted'], o8[1], o8[0][0]['fn']))
 check("D5 peacetime skips events without qname", d5, "event without qname skipped, valid event processed")
 
 check("D3 broken aggregator module removed", not os.path.exists(os.path.join(ROOT, "detection", "detector_base", "aggregator.py")),

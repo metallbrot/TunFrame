@@ -373,3 +373,16 @@ Entries are added in the commit that introduces the change.
 - **Affected outputs**: which detectors run (helper classes no longer load;
   failing detectors no longer crash an unrestricted run). `load_detectors()`
   now returns instances instead of classes.
+
+## D8: Partial results are kept on Ctrl+C
+
+- **Old**: The list of completed results was only handed back to `main()`
+  after the whole wartime phase returned, so the interrupt handler never had
+  anything to show, and the interrupted window's measurements were lost.
+- **New**: `run_wartime()` catches Ctrl+C, stops reading, evaluates the
+  partial window and returns `counts["interrupted"] = True`. The window is
+  saved as a results file with `run_status.status = "interrupted"`, then the
+  interrupt is re-raised and the run shuts down. Completed windows are shared
+  with `main()` as they finish and are printed by its interrupt handler.
+- **Affected outputs**: an additional results file with status `interrupted`
+  for the window running at Ctrl+C.

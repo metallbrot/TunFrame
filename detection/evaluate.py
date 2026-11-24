@@ -164,7 +164,8 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
         ``logcount`` and ``tunnel_count`` count log lines (queries and
         responses). ``alldomains`` is the set of registered domains seen in
         this window. ``counts`` splits lines into ``total_queries``,
-        ``total_responses``, ``tunnel_queries`` and ``tunnel_responses``.
+        ``total_responses``, ``tunnel_queries`` and ``tunnel_responses``, plus
+        ``interrupted`` (True if Ctrl+C ended the window early).
     """
     alldomains = set()
     tunneling_domains_seen = {domain: False for domain in tunneling_domains}
@@ -175,58 +176,67 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
     
     # The caller clears wartime_stop_event before arming the phase timer;
     # clearing it here would swallow a stop that was already signalled.
-    while not wartime_stop_event.is_set():
-        try:
-            logline = next(log_generator)
-        except StopIteration:
-            logger.warning(f"\n⚠ Log ended after {logcount} lines")
-            break
-
-        # Idle poll: the reader yields None so the stop event is re-checked.
-        if logline is None:
-            continue
-        if get_fqdn(logline) is None:
-            continue
-
-        domain = get_registered_domain(logline)
-        
-        if not validate_fqdn(logline) or domain == "":
-            logger.debug(f"[!] Invalid FQDN detected: {get_fqdn(logline)}")
-            continue
-
-
-        if domain and domain not in alldomains:
-            alldomains.add(domain)
-
-        # Only update progress every 100 lines
-        if logcount % 100 == 0:
-            logger.info(f"[WARTIME] Processing line {logcount} ({domain})", extra={'progress': True})
-        
-        istunnel = False
-        logcount += 1
-        response = is_response(logline)
-        counts["total_responses" if response else "total_queries"] += 1
-        
-        if domain in tunneling_domains:
-            tunneling_domains_seen[domain] = True
-            istunnel = True
-            tunnel_count += 1
-            counts["tunnel_responses" if response else "tunnel_queries"] += 1
-            logger.debug(f"[!] Tunneling seen...({domain})")
-        
-        for detector in detectors:
-            detector.process_line(logline, istunnel)
-
-        done = True
-
-        for detector in detectors:
-            if detector.alarms.intersection(tunneling_domains) != tunneling_domains or len(tunneling_domains) == 0:
-                done = False
+    interrupted = False
+    try:
+        while not wartime_stop_event.is_set():
+            try:
+                logline = next(log_generator)
+            except StopIteration:
+                logger.warning(f"\n⚠ Log ended after {logcount} lines")
                 break
 
-        if done:
-            logger.info("[+] All tunneling domains detected. Stopping Wartime...")
-            wartime_stop_event.set()
+            # Idle poll: the reader yields None so the stop event is re-checked.
+            if logline is None:
+                continue
+            if get_fqdn(logline) is None:
+                continue
+
+            domain = get_registered_domain(logline)
+        
+            if not validate_fqdn(logline) or domain == "":
+                logger.debug(f"[!] Invalid FQDN detected: {get_fqdn(logline)}")
+                continue
+
+
+            if domain and domain not in alldomains:
+                alldomains.add(domain)
+
+            # Only update progress every 100 lines
+            if logcount % 100 == 0:
+                logger.info(f"[WARTIME] Processing line {logcount} ({domain})", extra={'progress': True})
+        
+            istunnel = False
+            logcount += 1
+            response = is_response(logline)
+            counts["total_responses" if response else "total_queries"] += 1
+        
+            if domain in tunneling_domains:
+                tunneling_domains_seen[domain] = True
+                istunnel = True
+                tunnel_count += 1
+                counts["tunnel_responses" if response else "tunnel_queries"] += 1
+                logger.debug(f"[!] Tunneling seen...({domain})")
+        
+            for detector in detectors:
+                detector.process_line(logline, istunnel)
+
+            done = True
+
+            for detector in detectors:
+                if detector.alarms.intersection(tunneling_domains) != tunneling_domains or len(tunneling_domains) == 0:
+                    done = False
+                    break
+
+            if done:
+                logger.info("[+] All tunneling domains detected. Stopping Wartime...")
+                wartime_stop_event.set()
+    
+    except KeyboardInterrupt:
+        # Ctrl+C: stop reading and evaluate the partial window so its
+        # results can still be written (status 'interrupted').
+        interrupted = True
+        logger.warning("\n[!] Interrupted: evaluating the partial wartime window")
+    counts["interrupted"] = interrupted
     
     seen_tunnels = set([domain for domain, seen in tunneling_domains_seen.items() if seen])
     
