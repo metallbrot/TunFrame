@@ -251,8 +251,19 @@ def cfg_safe_get(cfg: dict, path: list[str], default: any = None) -> any:
         cur = cur[key]
     return cur
 
-def format_duration(seconds: int) -> str:
-    """Convert seconds to human-readable format (e.g., '1h20m' or '5m30s')"""
+def format_duration(seconds: float) -> str:
+    """Convert seconds to a human-readable duration.
+
+    The value is rounded to whole seconds. Seconds are omitted once the
+    duration reaches an hour.
+
+    Args:
+        seconds: Duration in seconds (int or float).
+
+    Returns:
+        str: For example ``'1h20m'``, ``'5m30s'`` or ``'0s'``.
+    """
+    seconds = int(round(seconds or 0))
     hours = seconds // 3600
     minutes = (seconds % 3600) // 60
     secs = seconds % 60

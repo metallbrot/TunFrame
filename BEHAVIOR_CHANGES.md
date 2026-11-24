@@ -323,3 +323,11 @@ Entries are added in the commit that introduces the change.
   (controller design, missing "file exfiltrated" stop criterion as an open
   design decision, root simulator placement, leakage excluding the triggering
   query, FQDN filtering).
+
+## D1: Durations are formatted in whole seconds
+
+- **Old**: `format_duration()` operated on floats and produced strings such as
+  `1.0m4.435775000000007s`.
+- **New**: The value is rounded to whole seconds first (`1m4s`, `1m`, `2h`).
+- **Affected outputs**: `metadata.experiment.wartime_duration`,
+  `peacetime_duration`, `actual_runtime` strings and console output.

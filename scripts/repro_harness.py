@@ -27,7 +27,8 @@ class FlagTunnel(Detector):
         from detection.detector_base.feature_extraction import get_registered_domain
         if get_registered_domain(logline) == 'tunnel.com': self.alarms.add('tunnel.com')
 
-print("1) format_duration:", repr(ev.format_duration(64.435775)), repr(ev.format_duration(60.0)))
+fd = (ev.format_duration(64.435775), ev.format_duration(60.0), ev.format_duration(7200.0), ev.format_duration(0))
+check("D1 format_duration", fd == ('1m4s', '1m', '2h', '0s'), "got %s" % (fd,))
 
 d = Never(); d.alarms = set()
 r = d.evaluate({'tunnel.com'}, {'tunnel.com', 'a.com', 'b.com'}, 10, 2, set())
