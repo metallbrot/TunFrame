@@ -254,3 +254,16 @@ Entries are added in the commit that introduces the change.
 - **Affected outputs**: new metadata keys only.
 - **Not covered**: pcap/allowlist hashes, the tldextract public-suffix-list
   snapshot and Docker image digests (`:latest` tags) are still not recorded.
+
+## C5: DNSExfiltrator domains are validated at startup
+
+- **Old**: BIND forwarders were generated from
+  `traffic.tunnel.tunneling_domains` only. A DNSExfiltrator config domain
+  missing from that list was silently forwarded to the public resolver while
+  the evaluation still used it as ground truth; empty domain lists ran anyway.
+- **New**: `run_setup()` calls `validate_dnsexfil_domains()` before any Docker
+  command. A config without domains or with a domain outside
+  `traffic.tunnel.tunneling_domains` (case-insensitive) aborts the run with a
+  `ValueError` listing every offending config.
+- **Affected outputs**: none for valid configurations; invalid ones no longer
+  start.

@@ -116,6 +116,14 @@ check("C4 results are self-contained", len(ri['git_commit']) == 40 and ri['libra
 check("C3 skipped configs leave a results file", d3['metadata']['run_status'] == {'status': 'skipped', 'reason': 'client failed'} and d3['detectors'] == [],
       "written %s with status %s" % (f3.name, d3['metadata']['run_status']['status']))
 
+try:
+    main.validate_dnsexfil_domains([{'name': 'a', 'domains': ['tunnel.com', 'other.net']}], ['tunnel.com'])
+    c5 = False
+except ValueError:
+    c5 = True
+main.validate_dnsexfil_domains([{'name': 'b', 'domains': ['Tunnel.com']}], ['tunnel.com'])   # must pass
+check("C5 unrouted exfil domains rejected", c5, "other.net outside tunneling_domains raised ValueError=%s" % c5)
+
 dets = [FlagTunnel()]
 cfg1 = [evt('x%d.tunnel.com' % i) for i in range(5)] + [evt('a.com')]
 ev.wartime_stop_event.clear()

@@ -578,6 +578,40 @@ def _check_dnsexfil_keys(where: str, keys) -> None:
         )
 
 
+def validate_dnsexfil_domains(configs: list, tunneling_domains: list) -> None:
+    """Check that every DNSExfiltrator config only uses BIND-routed tunnel domains.
+
+    The BIND configs for resolver, root and TLD are generated once from
+    ``traffic.tunnel.tunneling_domains``. A domain outside that list would be
+    forwarded to the public resolver instead of the simulated hierarchy, while
+    the evaluation would still treat it as ground truth.
+
+    Args:
+        configs: Filled DNSExfiltrator configurations.
+        tunneling_domains: ``traffic.tunnel.tunneling_domains`` from the config.
+
+    Raises:
+        ValueError: If a config has no domains or uses a domain that is not in
+            ``traffic.tunnel.tunneling_domains``.
+    """
+    routed = {str(d).strip().rstrip('.').lower() for d in (tunneling_domains or [])}
+    problems = []
+    for config in configs:
+        name = config.get('name', 'config')
+        domains = [str(d).strip().rstrip('.').lower() for d in config.get('domains') or []]
+        if not domains:
+            problems.append(f"{name}: no domains configured")
+            continue
+        missing = sorted(set(domains) - routed)
+        if missing:
+            problems.append(f"{name}: {missing} not in traffic.tunnel.tunneling_domains")
+    if problems:
+        raise ValueError(
+            "DNSExfiltrator domains must be listed in traffic.tunnel.tunneling_domains "
+            f"(routed domains: {sorted(routed)}):\n  " + "\n  ".join(problems)
+        )
+
+
 def get_dnsexfiltrator_configs(cfg: dict):
     """Get DNSExfiltrator configurations from config file.
 
@@ -692,8 +726,10 @@ def run_setup(cfg: dict):
     if global_allowlist_path is None:
         global_allowlist_path = ""
     
-    # Get DNSExfiltrator configurations to calculate total duration
+    # Get DNSExfiltrator configurations to calculate total duration, and make
+    # sure every config domain is routed to the simulated DNS hierarchy.
     dnsexfil_configs = get_dnsexfiltrator_configs(cfg)
+    validate_dnsexfil_domains(dnsexfil_configs, tunneling_domains)
     
     # Calculate total estimated duration
     if dnsexfil_configs:
