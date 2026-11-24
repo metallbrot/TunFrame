@@ -4,9 +4,7 @@ import importlib
 import inspect
 import threading
 import logging
-import time
-from detection.detector_base.readfile import readjson
-from detection.detector_base.feature_extraction import get_registered_domain, is_response, extract_record_type, extract_subdomain_string, json_safe_get, get_fqdn, validate_fqdn
+from detection.detector_base.feature_extraction import get_registered_domain, is_response, get_fqdn, validate_fqdn
 import json
 
 # Get the logger configured in main.py
@@ -74,7 +72,7 @@ def save_results(results_file: str, results: dict, metadata: dict) -> None:
     logger.info(f"[+] Results saved to {results_file}")
 
 
-def generate_allowlists(detectors: list, global_allowlist: set, peace_logcount: int) -> None:
+def generate_allowlists(detectors: list, global_allowlist: set) -> None:
     """Generate and assign allowlists to detectors after peacetime."""
     for detector in detectors:
         detector_name = type(detector).__name__

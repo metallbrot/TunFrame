@@ -150,7 +150,7 @@ det = [Never()]
 peace = [evt('peace%d.net' % i) for i in range(20)]
 ev.peacetime_stop_event.clear()
 plc, pdomains = ev.run_peacetime(det, gen(peace), {'tunnel.com'})
-ev.generate_allowlists(det, set(), plc)
+ev.generate_allowlists(det, set())
 det[0].alarms = {'war1.org'}  # pretend one false positive in wartime
 war = [evt('war%d.org' % i) for i in range(4)]
 ev.wartime_stop_event.clear()
@@ -277,6 +277,9 @@ ev.wartime_stop_event.clear()
 o8 = ev.run_wartime([Never()], interrupting(), {'tunnel.com'}, set())
 check("D8 interrupt yields partial evaluation", o8[5]['interrupted'] and o8[1] == 2 and o8[0][0]['fn'] == 1,
       "interrupted=%s, %d lines evaluated, fn=%d" % (o8[5]['interrupted'], o8[1], o8[0][0]['fn']))
+msrc = open(os.path.join(ROOT, "main.py")).read()
+check("D9 dead helpers removed", all(x not in msrc for x in ("def get_dnsexfiltrator_status", "def start_dnsexfiltrator_server", "def start_dnsexfiltrator_client", "port_ok")),
+      "unused helpers and the always-true port_ok flag are gone")
 check("D5 peacetime skips events without qname", d5, "event without qname skipped, valid event processed")
 
 check("D3 broken aggregator module removed", not os.path.exists(os.path.join(ROOT, "detection", "detector_base", "aggregator.py")),

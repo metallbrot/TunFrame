@@ -105,7 +105,7 @@ def compose_down():
         "down"
     ]
     try:
-        result = subprocess.run(cmd, check=False)
+        result = subprocess.run(cmd, check=False, capture_output=True, text=True)
         if result.returncode != 0:
             logger.warning(f"[!] Docker compose down returned code {result.returncode}")
             if result.stderr:
@@ -155,130 +155,6 @@ def check_process_running(container: str, process_name: str, expect_running: boo
     except Exception as e:
         logger.debug(f"[!] Error checking process {process_name} in {container}: {e}")
         return False
-
-
-def get_dnsexfiltrator_status() -> dict:
-    """Get detailed status of DNSExfiltrator server and client processes.
-    
-    Returns:
-        dict: Status information with keys 'server_running', 'client_running',
-              'server_pid', 'client_pid', 'server_processes', 'client_processes'
-    """
-    status = {
-        'server_running': False,
-        'client_running': False,
-        'server_pid': None,
-        'client_pid': None,
-        'server_processes': [],
-        'client_processes': []
-    }
-    
-    try:
-        # Check server
-        cmd = ["docker", "exec", "dnsexfiltrator-server", "ps", "aux"]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if result.returncode == 0:
-            for line in result.stdout.strip().split('\n')[1:]:  # Skip header
-                if 'dnsExfiltrator' in line:
-                    status['server_processes'].append(line)
-                    status['server_running'] = True
-    except Exception:
-        pass
-    
-    try:
-        # Check client
-        cmd = ["docker", "exec", "dnsexfiltrator-client", "ps", "aux"]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if result.returncode == 0:
-            for line in result.stdout.strip().split('\n')[1:]:  # Skip header
-                if 'DNSExfiltrator' in line:
-                    status['client_processes'].append(line)
-                    status['client_running'] = True
-    except Exception:
-        pass
-    
-    return status
-
-
-def start_dnsexfiltrator_server(
-    domains: list[str],
-    password: str = "tunframe",
-):
-    """Start DNSExfiltrator server with configurable domains."""
-    volume_dir = PROJECT_ROOT / "docker/dnsexfiltrator-server/volume"
-    volume_dir.mkdir(parents=True, exist_ok=True)
-    
-    domains_file = volume_dir / "domains.txt"
-    domains_file.write_text("\n".join(domains))
-
-    cmd = [
-        "docker", "exec", "-d", "dnsexfiltrator-server",
-        "python3", "-u", "/app/dnsExfiltrator.py",
-        "-f", "/app/domains.txt",
-        "-p", password,
-        "-o", "/app/outputfile",
-    ]
-    logger.info(f"[+] Starting DNSExfiltrator server: {len(domains)} domains")
-    subprocess.run(cmd, check=True)
-
-
-def start_dnsexfiltrator_client(
-    filepath: str,
-    domains: list[str],
-    password: str,
-    throttle: int = None,
-    throttle_random: int = None,
-    label_size: int = None,
-    encoding: str = None,
-    dil: int = None,
-):
-    """Start DNSExfiltrator client with configurable parameters."""
-    data_dir = PROJECT_ROOT / "docker/dnsexfiltrator-client/data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    
-    domains_file = data_dir / "domains.txt"
-    domains_file.write_text("\n".join(domains))
-
-    # Handle filepath - strip /data/ prefix if present (container path)
-    if filepath.startswith('/data/'):
-        # Container path - look for file in data_dir
-        relative_filepath = filepath[6:]  # Remove '/data/' prefix
-        file_path = data_dir / relative_filepath
-        container_filepath = f"/data/{relative_filepath}"
-    else:
-        file_path = data_dir / filepath
-        container_filepath = f"/data/{filepath}"
-    
-    if not file_path.exists():
-        # Also check if it's an absolute host path
-        if filepath.startswith('/') and Path(filepath).exists():
-            file_path = Path(filepath)
-            container_filepath = f"/data/{Path(filepath).name}"
-        else:
-            raise FileNotFoundError(f"File not found: {file_path}")
-
-    cmd = [
-        "docker", "exec", "-d", "dnsexfiltrator-client",
-        "mono", "/app/DNSExfiltrator.exe",
-        container_filepath,
-        "/data/domains.txt",
-        password,
-        "s=172.16.0.2",
-    ]
-
-    if throttle is not None:
-        cmd.append(f"t={throttle}")
-    if throttle_random is not None:
-        cmd.append(f"tr={throttle_random}")
-    if label_size is not None:
-        cmd.append(f"l={label_size}")
-    if encoding is not None:
-        cmd.append(f"e={encoding}")
-    if dil is not None:
-        cmd.append(f"dil={dil}")
-
-    logger.info(f"[+] Starting DNSExfiltrator client: {filepath}, {len(domains)} domains")
-    subprocess.run(cmd, check=True)
 
 
 def replay_fire_and_forget(pcap: str, pps: int, label: str):
@@ -853,7 +729,6 @@ def run_peacetime_phase(
     logger.info(f"\n{len(active_detectors)} detectors loaded: {[type(d).__name__ for d in active_detectors]}\n")
     global_allowlist = load_global_allowlist(global_allowlist_path, base_dir=CONFIG_PATH.parent)
     
-    log_generator_iter = log_generator
     start_timestamp = datetime.now()
 
     # Start benign traffic
@@ -896,7 +771,7 @@ def run_peacetime_phase(
         peace_timer = PhaseTimer(peacetime_stop_event, peacetime_duration).start()
         try:
             # Run peacetime (will block until stop event is set)
-            peace_logcount, alldomains = run_peacetime(active_detectors, log_generator_iter, tunneling_domains_set)
+            peace_logcount, alldomains = run_peacetime(active_detectors, log_generator, tunneling_domains_set)
         finally:
             peace_timer.cancel()
         
@@ -991,7 +866,6 @@ def run_wartime_phase(
     tunneling_domains_set: set,
     global_allowlist: set,
     active_detectors: list,
-    log_generator,
     alldomains: set,
     start_timestamp: datetime,
     server_ip: str,
@@ -1089,7 +963,6 @@ def run_wartime_phase(
         else:
             # Check if resolver is listening on port 53 or if BIND9 is running
             # Use ps aux to check for BIND9 process (more reliable than netstat/ss which may not be installed)
-            port_ok = True
             try:
                 check_cmd = ["docker", "exec", "resolver", "ps", "aux"]
                 check_result = subprocess.run(check_cmd, capture_output=True, text=True, check=False)
@@ -1102,80 +975,79 @@ def run_wartime_phase(
             except Exception as e:
                 logger.warning(f"[!] Could not check resolver: {e}. Continuing with connectivity test.")
             
-            if port_ok:
-                # Start the dnsexfiltrator containers once
-                logger.info(f"[+] Starting DNSExfiltrator containers...")
+            # Start the dnsexfiltrator containers once
+            logger.info(f"[+] Starting DNSExfiltrator containers...")
+            try:
+                logger.info(f"[+] Running: docker compose -f {DOCKER_COMPOSE_FILE} --profile dnsexfiltrator up -d")
+                compose_up("dnsexfiltrator")
+                time.sleep(5)  # Increased from 3 to 5 seconds
+                
+                # List containers to verify they were created
                 try:
-                    logger.info(f"[+] Running: docker compose -f {DOCKER_COMPOSE_FILE} --profile dnsexfiltrator up -d")
-                    compose_up("dnsexfiltrator")
-                    time.sleep(5)  # Increased from 3 to 5 seconds
-                    
-                    # List containers to verify they were created
-                    try:
-                        list_cmd = ["docker", "ps", "-a", "--format", "table {{.Names}}\t{{.Status}}"]
-                        list_result = subprocess.run(list_cmd, capture_output=True, text=True, check=False)
-                        logger.info(f"[+] Containers after compose up:\n{list_result.stdout}")
-                    except Exception:
-                        pass
-                    
-                    # Wait for containers to be fully ready
-                    logger.info(f"[+] Waiting for DNSExfiltrator containers to be ready...")
-                    for i in range(10):  # Try for 10 seconds
-                        if container_exists("dnsexfiltrator-server") and container_exists("dnsexfiltrator-client"):
-                            logger.info(f"[+] DNSExfiltrator containers are ready after {i+1}s")
-                            break
-                        time.sleep(1)
-                    else:
-                        logger.error(f"[!] DNSExfiltrator containers did not start within 10 seconds")
-                        dnsexfil_configs = []
-                except Exception as e:
-                    logger.error(f"[!] Failed to start DNSExfiltrator containers: {e}")
-                    dnsexfil_configs = []
+                    list_cmd = ["docker", "ps", "-a", "--format", "table {{.Names}}\t{{.Status}}"]
+                    list_result = subprocess.run(list_cmd, capture_output=True, text=True, check=False)
+                    logger.info(f"[+] Containers after compose up:\n{list_result.stdout}")
+                except Exception:
+                    pass
                 
-                # Verify containers exist and are running
-                server_exists = container_exists("dnsexfiltrator-server")
-                client_exists = container_exists("dnsexfiltrator-client")
-                server_running = container_is_running("dnsexfiltrator-server") if server_exists else False
-                client_running = container_is_running("dnsexfiltrator-client") if client_exists else False
-                
-                # If containers don't exist, try to list all containers for debugging
-                if not server_exists or not client_exists:
-                    try:
-                        list_cmd = ["docker", "ps", "-a", "--format", "table {{.Names}}\t{{.Status}}"]
-                        list_result = subprocess.run(list_cmd, capture_output=True, text=True, check=False)
-                        logger.error(f"[!] Current containers:\n{list_result.stdout}")
-                    except Exception:
-                        pass
-                
-                if not server_exists or not client_exists:
-                    logger.error(f"[!] DNSExfiltrator containers do not exist!")
-                    logger.error(f"[!] Server exists: {server_exists}, Client exists: {client_exists}")
-                    dnsexfil_configs = []
-                elif not server_running or not client_running:
-                    logger.error(f"[!] DNSExfiltrator containers not running!")
-                    logger.error(f"[!] Server running: {server_running}, Client running: {client_running}")
-                    dnsexfil_configs = []
+                # Wait for containers to be fully ready
+                logger.info(f"[+] Waiting for DNSExfiltrator containers to be ready...")
+                for i in range(10):  # Try for 10 seconds
+                    if container_exists("dnsexfiltrator-server") and container_exists("dnsexfiltrator-client"):
+                        logger.info(f"[+] DNSExfiltrator containers are ready after {i+1}s")
+                        break
+                    time.sleep(1)
                 else:
-                    logger.info(f"[+] DNSExfiltrator containers are running")
-                    
-                    # Check if client can reach resolver
-                    connectivity_ok = True
-                    try:
-                        # Try to resolve via the resolver from the client container
-                        test_cmd = ["docker", "exec", "dnsexfiltrator-client", "dig", "@172.16.0.2", "example.com", "+timeout=2", "+tries=1"]
-                        test_result = subprocess.run(test_cmd, capture_output=True, text=True, check=False, timeout=5)
-                        if "connection timed out" in test_result.stdout or "no servers could be reached" in test_result.stdout:
-                            logger.error(f"[!] DNSExfiltrator client cannot reach resolver at 172.16.0.2!")
-                            logger.error(f"[!] Dig output: {test_result.stdout[-200:]}")
-                            connectivity_ok = False
-                        else:
-                            logger.info(f"[+] Connectivity check: DNSExfiltrator client can reach resolver")
-                    except Exception as e:
-                        logger.warning(f"[!] Could not verify connectivity: {e}")
-                        connectivity_ok = True  # Assume ok if we can't check
-                    
-                    if not connectivity_ok:
-                        dnsexfil_configs = []
+                    logger.error(f"[!] DNSExfiltrator containers did not start within 10 seconds")
+                    dnsexfil_configs = []
+            except Exception as e:
+                logger.error(f"[!] Failed to start DNSExfiltrator containers: {e}")
+                dnsexfil_configs = []
+            
+            # Verify containers exist and are running
+            server_exists = container_exists("dnsexfiltrator-server")
+            client_exists = container_exists("dnsexfiltrator-client")
+            server_running = container_is_running("dnsexfiltrator-server") if server_exists else False
+            client_running = container_is_running("dnsexfiltrator-client") if client_exists else False
+            
+            # If containers don't exist, try to list all containers for debugging
+            if not server_exists or not client_exists:
+                try:
+                    list_cmd = ["docker", "ps", "-a", "--format", "table {{.Names}}\t{{.Status}}"]
+                    list_result = subprocess.run(list_cmd, capture_output=True, text=True, check=False)
+                    logger.error(f"[!] Current containers:\n{list_result.stdout}")
+                except Exception:
+                    pass
+            
+            if not server_exists or not client_exists:
+                logger.error(f"[!] DNSExfiltrator containers do not exist!")
+                logger.error(f"[!] Server exists: {server_exists}, Client exists: {client_exists}")
+                dnsexfil_configs = []
+            elif not server_running or not client_running:
+                logger.error(f"[!] DNSExfiltrator containers not running!")
+                logger.error(f"[!] Server running: {server_running}, Client running: {client_running}")
+                dnsexfil_configs = []
+            else:
+                logger.info(f"[+] DNSExfiltrator containers are running")
+                
+                # Check if client can reach resolver
+                connectivity_ok = True
+                try:
+                    # Try to resolve via the resolver from the client container
+                    test_cmd = ["docker", "exec", "dnsexfiltrator-client", "dig", "@172.16.0.2", "example.com", "+timeout=2", "+tries=1"]
+                    test_result = subprocess.run(test_cmd, capture_output=True, text=True, check=False, timeout=5)
+                    if "connection timed out" in test_result.stdout or "no servers could be reached" in test_result.stdout:
+                        logger.error(f"[!] DNSExfiltrator client cannot reach resolver at 172.16.0.2!")
+                        logger.error(f"[!] Dig output: {test_result.stdout[-200:]}")
+                        connectivity_ok = False
+                    else:
+                        logger.info(f"[+] Connectivity check: DNSExfiltrator client can reach resolver")
+                except Exception as e:
+                    logger.warning(f"[!] Could not verify connectivity: {e}")
+                    connectivity_ok = True  # Assume ok if we can't check
+                
+                if not connectivity_ok:
+                    dnsexfil_configs = []
         # Track domains seen across all configs (initialized before conditional to avoid UnboundLocalError)
         all_seen_domains = set()
 
@@ -1250,7 +1122,6 @@ def run_wartime_phase(
             config_offset = log_end_offset(LOGFILE)
             
             # Reset state for this configuration - create fresh log generator
-            config_alldomains = set()
             config_start_timestamp = datetime.now()
             config_log_generator = readjson(str(LOGFILE), start_offset=config_offset)
             
@@ -1630,13 +1501,13 @@ def main():
             active_detectors_list, log_generator
         )
         
-        generate_allowlists(active_detectors, global_allowlist, peace_logcount)
+        generate_allowlists(active_detectors, global_allowlist)
         
 
         # Run wartime phase(s)
         alldomains, _ = run_wartime_phase(
             wartime_duration, peacetime_duration, tunneling_domains_set, global_allowlist,
-            active_detectors, log_generator, alldomains, start_timestamp,
+            active_detectors, alldomains, start_timestamp,
             server_ip, public_resolver, cfg, results_file, dnsexfil_configs,
             results_sink=all_experiment_results
         )
