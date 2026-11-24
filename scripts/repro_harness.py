@@ -262,6 +262,14 @@ dl = FlagTunnel()
 ev.wartime_stop_event.clear()
 o6 = ev.run_wartime([dl], gen([evt('AbC.TuNnEl.CoM')]), {main.normalize_domain('Tunnel.COM.')}, set())
 check("D6 case-insensitive ground truth and alarms", o6[0][0]['tp'] == 1 and o6[2] == 1, "mixed-case query vs mixed-case config: tp=%d tunnel_lines=%d" % (o6[0][0]['tp'], o6[2]))
+loaded = ev.load_detectors(os.path.join(ROOT, "detection", "detectors"), ["MarkAll"])
+try:
+    ev.load_detectors(os.path.join(ROOT, "detection", "detectors"), ["NoSuchDetector"])
+    d7 = False
+except RuntimeError:
+    d7 = True
+check("D7 load_detectors returns Detector instances; missing requested detector fails", [type(x).__name__ for x in loaded] == ["MarkAll"] and isinstance(loaded[0], Detector) and d7,
+      "loaded %s; missing requested detector raised=%s" % ([type(x).__name__ for x in loaded], d7))
 check("D5 peacetime skips events without qname", d5, "event without qname skipped, valid event processed")
 
 check("D3 broken aggregator module removed", not os.path.exists(os.path.join(ROOT, "detection", "detector_base", "aggregator.py")),

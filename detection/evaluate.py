@@ -285,26 +285,60 @@ peacetime_stop_event = threading.Event()
 peacetime_done = threading.Event()
 
 def load_detectors(detectors_path, active_detectors=None):
-    """Load detector classes dynamically, filtered by active_detectors list."""
+    """Load and instantiate detectors from ``detectors_path``.
+
+    Every subdirectory with a ``detector.py`` is a detector package. Only
+    concrete ``Detector`` subclasses defined in that ``detector.py`` are used;
+    imported helper classes and other classes are ignored.
+
+    Error policy: a detector listed in ``active_detectors`` that is missing or
+    fails to import or instantiate aborts the run. Without an active list,
+    a failing detector is logged with its traceback and skipped.
+
+    Args:
+        detectors_path: Directory containing one subdirectory per detector.
+        active_detectors: Directory names to load, or None for all.
+
+    Returns:
+        list: Detector instances.
+
+    Raises:
+        RuntimeError: If an explicitly requested detector cannot be loaded.
+    """
+    from detection.detector_base.detector_base import Detector
+
+    requested = set(active_detectors) if active_detectors is not None else None
     detectors = []
-    for folder in os.listdir(detectors_path):
+    failures = []
+    found = set()
+    for folder in sorted(os.listdir(detectors_path)):
         folder_path = os.path.join(detectors_path, folder)
         if not os.path.isdir(folder_path) or folder.startswith("__"):
             continue
-        # Filter by active_detectors if provided
-        if active_detectors is not None and folder not in active_detectors:
+        if requested is not None and folder not in requested:
             logger.info(f"⊘ Skipping {folder} (not in active detectors)")
             continue
-        detector_py_path = os.path.join(folder_path, "detector.py")
-        if not os.path.isfile(detector_py_path):
+        if not os.path.isfile(os.path.join(folder_path, "detector.py")):
             logger.warning(f"⚠ Skipping {folder} (no detector.py)")
             continue
+        found.add(folder)
         logger.info(f"✓ Loading: {folder}")
         try:
             module = importlib.import_module(f"detection.detectors.{folder}.detector")
-            for name, obj in inspect.getmembers(module, inspect.isclass):
-                if obj.__module__ == module.__name__:
-                    detectors.append(obj)
-        except ImportError as e:
-            logger.error(f"✗ Import error in {folder}: {e}")
+            classes = [obj for _, obj in inspect.getmembers(module, inspect.isclass)
+                       if obj.__module__ == module.__name__ and issubclass(obj, Detector)
+                       and not inspect.isabstract(obj)]
+            if not classes:
+                raise ImportError(f"no concrete Detector subclass in {folder}/detector.py")
+            for cls in classes:
+                detectors.append(cls())
+        except Exception as e:
+            logger.error(f"✗ Failed to load {folder}: {e}", exc_info=True)
+            failures.append(folder)
+
+    missing = sorted(requested - found) if requested is not None else []
+    if missing:
+        raise RuntimeError(f"Requested detectors not found in {detectors_path}: {missing}")
+    if requested is not None and failures:
+        raise RuntimeError(f"Requested detectors failed to load: {failures}")
     return detectors

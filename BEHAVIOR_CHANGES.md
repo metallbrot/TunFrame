@@ -358,3 +358,18 @@ Entries are added in the commit that introduces the change.
   the global allowlist already is (C7).
 - **Affected outputs**: none for all-lowercase traffic and configs (the
   audited log had no mixed-case names); otherwise TP/FP/FN and tunnel counts.
+
+## D7: Detector loading is restricted and fails loudly for requested detectors
+
+- **Old**: `load_detectors()` registered every class defined in
+  `detector.py` (helper classes included) and only caught `ImportError`; any
+  other error, such as a missing model file, crashed the run, and an unknown
+  name in `detectors.active` was silently ignored.
+- **New**: `load_detectors()` returns instances of concrete `Detector`
+  subclasses defined in each `detector.py` (folders in sorted order). Errors
+  during import or instantiation are logged with a traceback. If
+  `detectors.active` is set, a missing or failing requested detector raises
+  `RuntimeError`; without it, a failing detector is skipped.
+- **Affected outputs**: which detectors run (helper classes no longer load;
+  failing detectors no longer crash an unrestricted run). `load_detectors()`
+  now returns instances instead of classes.
