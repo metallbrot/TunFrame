@@ -578,6 +578,49 @@ def _check_dnsexfil_keys(where: str, keys) -> None:
         )
 
 
+# Keys that older docs or configs used but the code does not read.
+# Renamed keys abort the run because ignoring them would silently change it.
+RENAMED_CONFIG_KEYS = {
+    ('timing', 'duration'): "use timing.wartime_duration (minutes)",
+    ('detector', 'names'): "use detectors.active (list of detector directory names)",
+}
+IGNORED_CONFIG_KEYS = {
+    ('traffic', 'tunnel', 'docker'): "live tunneling is configured in the dnsexfiltrator section",
+    ('traffic', 'tunnel', 'toolname'): "not used",
+    ('allowlist', 'local_allowlist_dir'): "saved per-detector allowlists are not supported; use a peacetime phase",
+}
+
+
+def check_config_keys(cfg: dict) -> None:
+    """Reject renamed configuration keys and warn about ignored ones.
+
+    Args:
+        cfg: Configuration dictionary.
+
+    Raises:
+        ValueError: If a renamed key (for example ``timing.duration``) is set.
+    """
+    _missing = object()
+    errors = []
+    for path, hint in RENAMED_CONFIG_KEYS.items():
+        if cfg_safe_get(cfg, list(path), _missing) is not _missing:
+            errors.append(f"'{'.'.join(path)}' is not supported: {hint}")
+    if errors:
+        raise ValueError("Invalid configuration:\n  " + "\n  ".join(errors))
+    for path, hint in IGNORED_CONFIG_KEYS.items():
+        if cfg_safe_get(cfg, list(path), _missing) is not _missing:
+            logger.warning(f"[!] Config key '{'.'.join(path)}' is ignored: {hint}")
+
+
+def resolve_results_dir(cfg: dict) -> Path:
+    """Return the results directory from ``output.logdir`` (default ``results``).
+
+    Relative paths are resolved against the directory of ``config.yaml``.
+    """
+    logdir = Path(cfg_safe_get(cfg, ['output', 'logdir'], 'results') or 'results')
+    return logdir if logdir.is_absolute() else (CONFIG_PATH.parent / logdir).resolve()
+
+
 def validate_dnsexfil_domains(configs: list, tunneling_domains: list) -> None:
     """Check that every DNSExfiltrator config only uses BIND-routed tunnel domains.
 
@@ -701,7 +744,11 @@ def run_setup(cfg: dict):
                 public_resolver, global_allowlist_path, active_detectors_list, results_file,
                 dnsexfil_configs)
     """
-    # Load timing configuration
+    global RESULTS_DIR
+    check_config_keys(cfg)
+    RESULTS_DIR = resolve_results_dir(cfg)
+
+    # Load timing configuration (minutes)
     wartime_duration_config = cfg_safe_get(cfg, ["timing", "wartime_duration"], 60)
     peacetime_duration_config = cfg_safe_get(cfg, ["timing", "peacetime_duration"], None)
     

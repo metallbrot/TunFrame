@@ -294,3 +294,24 @@ Entries are added in the commit that introduces the change.
   Entries are lowercased without a trailing dot.
 - **Affected outputs**: allowlist content (and thus FP/TN/FPR) whenever the
   file was not already a clean, lowercase, one-domain-per-line list.
+
+## C8: Configuration keys match the documentation
+
+- **Old**: README and `example_config.yaml` documented `timing.duration`
+  (ignored: wartime silently defaulted to 60 min), peacetime in seconds with
+  default 0 (code: minutes, default wartime/3), `detector.names` (code:
+  `detectors.active`; all detectors ran), and `output.logdir`,
+  `traffic.tunnel.docker`, `traffic.tunnel.toolname`,
+  `allowlist.local_allowlist_dir`, none of which `main.py` read.
+- **New**:
+  - `timing.duration` or `detector.names` in the config abort the run with a
+    hint to the correct key.
+  - `output.logdir` is implemented (relative to `config.yaml`; default
+    `results`).
+  - `traffic.tunnel.docker`, `traffic.tunnel.toolname` and
+    `allowlist.local_allowlist_dir` are not implemented and log an "ignored"
+    warning.
+  - README and `example_config.yaml` document the keys, units and defaults the
+    code actually uses (peacetime in minutes, default wartime/3).
+- **Affected outputs**: result location if `output.logdir` was set to a
+  non-default path; configs using renamed keys no longer run.

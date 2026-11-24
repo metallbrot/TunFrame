@@ -233,6 +233,14 @@ with open(os.path.join(_d7, 'top.csv'), 'w') as f:
 al = ev.load_global_allowlist('top.csv', base_dir=_d7)
 check("C7 allowlist parsing and path", al == {'google.com', 'example.org', 'ads.example.net', 'plain.de'}, "parsed %s" % sorted(al))
 
+try:
+    main.check_config_keys({'timing': {'duration': 60}})
+    c8 = False
+except ValueError:
+    c8 = True
+c8_dir = main.resolve_results_dir({'output': {'logdir': './results/'}}) == (main.CONFIG_PATH.parent / 'results').resolve()
+check("C8 renamed keys rejected, output.logdir used", c8 and c8_dir, "timing.duration rejected=%s, logdir resolved=%s" % (c8, c8_dir))
+
 import tldextract
 try:
     tldextract.extract(None); print("8) tldextract.extract(None) did not raise")

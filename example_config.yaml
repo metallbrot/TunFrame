@@ -1,15 +1,18 @@
+# Template for config.yaml. Durations are in minutes. See README.md for every key.
 global:
   name: "name"
   description: "description"
   public_resolver: "1.1.1.1"
 
+detectors:
+  active: ["MarkAll"]          # detector directory names; omit to load all
+
 timing:
-  duration: 60
-  peacetime_duration: 20
+  wartime_duration: 60         # per configuration in DNSExfiltrator mode
+  peacetime_duration: 20       # 0 disables peacetime
 
 allowlist:
-  global_allowlist_path: ""
-  local_allowlist_dir: ""
+  global_allowlist_path: ""    # e.g. "./allowlists/tranco.csv"
 
 traffic:
   pcap_path: "./pcaps"
@@ -17,21 +20,38 @@ traffic:
     enabled: true
     pcap: "benign.pcap"
     pps: 20
-
   wildcard:
     enabled: false
     pcap: "wildcard.pcap"
     pps: 15
-
   tunnel:
-    replay: false
-    docker: false
+    replay: false              # replay mode; ignored when dnsexfiltrator.enabled
     pcap: "tunneling.pcap"
     pps: 0
-    toolname: "docker_container_name_tunnel" #name of container in docker compose
     tunneling_domains: ["tunnel.com"]
-    tunnel_server_ip: 192.168.4.4 #has to be in right subnet
-    expansion_factor: 1.6
+    tunnel_server_ip: 192.168.4.4   # must be in 192.168.0.0/16
+    expansion_factor: 1.6      # replay mode only
+
+dnsexfiltrator:
+  enabled: false
+  baseline:
+    file: "/data/synthetic_cc_data_100.csv"
+    password: "tunframe"
+    throttle: 0
+    throttle_random: 0
+    label_max_size: 63
+    encoding: "base32"
+    dilution: 0
+    domains: ["tunnel.com"]    # must be listed in traffic.tunnel.tunneling_domains
+  sweeps:
+    - name: "throttle_sweep"
+      parameter: "throttle"
+      values: [5, 10, 20]
+  profiles:
+    - name: "stealth"
+      throttle: 20
+      throttle_random: 10
+      label_max_size: 30
 
 output:
   logdir: "./results/"
