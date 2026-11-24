@@ -236,6 +236,15 @@ if __name__ == '__main__':
                         continue
 
                     rawData = labels[0]
+                    
+                    # FIX for B3-CHK-001: Enforce label length limit (DNS max 63 chars)
+                    if len(rawData) > 63:
+                        print(color(f"[!] Label too long ({len(rawData)} chars), skipping"))
+                        reply = DNSRecord(DNSHeader(id=request.header.id, qr=1, aa=1, ra=1), q=request.q)
+                        reply.add_answer(RR(request.q.qname, QTYPE.A, rdata=A(f"{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{requestIndex % 256}"), ttl=60))
+                        udps.sendto(reply.pack(), addr)
+                        continue
+                    
                     currentEntropy = entropy(rawData)
                     entropies.append(currentEntropy)
 
@@ -269,21 +278,24 @@ if __name__ == '__main__':
                     seq_number = decrypted[0]
                     data_chunk = decrypted[1:]
 
-                    # Verify sequence number
+                    # FIX for B4-RETRY-004: Accept current or previous sequence number
                     expected_seq_number = requestIndex % 256
-                    if seq_number != expected_seq_number:
-                        print(color(f"[!] Out of order request: expected {expected_seq_number}, got {seq_number}"))
+                    
+                    if seq_number == expected_seq_number:
+                        # New chunk - process and increment
+                        fileData.extend(data_chunk)
+                        requestIndex += 1
+                    elif seq_number == (expected_seq_number - 1) % 256:
+                        # Retry - already processed, resend ACK
+                        print(color(f"[*] Retry detected: seq {seq_number}"))
+                    else:
+                        print(color(f"[!] Out of order: expected {expected_seq_number} or {(expected_seq_number - 1) % 256}, got {seq_number}"))
                         continue
-
-                    # Append data chunk
-                    fileData.extend(data_chunk)
 
                     # Send ACK with sequence number
                     reply = DNSRecord(DNSHeader(id=request.header.id, qr=1, aa=1, ra=1), q=request.q)
                     reply.add_answer(RR(request.q.qname, QTYPE.A, rdata=A(f"{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{seq_number}")))
                     udps.sendto(reply.pack(), addr)
-
-                    requestIndex += 1
                     progress(len(fileData), totalFileSize, "Receiving")
 
                     # All data received when we have totalFileSize bytes
