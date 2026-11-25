@@ -110,6 +110,7 @@ _old_dir = main.RESULTS_DIR
 main.RESULTS_DIR = _pl.Path(_tf.mkdtemp())
 f3 = main.save_status_result({'global': {'name': 'T'}}, 'cfgX', 'skipped', 'client failed')
 d3 = json.load(open(f3))
+main.close_run_report(); main.REPORT = None
 main.RESULTS_DIR = _old_dir
 ri = d3['metadata']['run_info']
 check("C4 results are self-contained", len(ri['git_commit']) == 40 and ri['libraries']['tldextract'] != '' and 'dnsexfiltrator_config' in d3['metadata'],
@@ -301,5 +302,38 @@ check("D5 peacetime skips events without qname", d5, "event without qname skippe
 
 check("D3 broken aggregator module removed", not os.path.exists(os.path.join(ROOT, "detection", "detector_base", "aggregator.py")),
       "detection/detector_base/aggregator.py removed (it had no importers)")
+
+# Per-run report directory, charts, report.html and dashboard API
+import pathlib as _pl2, datetime as _dt
+_old_dir = main.RESULTS_DIR
+main.RESULTS_DIR = _pl2.Path(tempfile.mkdtemp())
+_cfg = {'global': {'name': 'harness run'}}
+main.logger.setLevel(logging.INFO); main.console_handler.setLevel(logging.ERROR)   # run.log needs INFO; console stays quiet
+_rep = main.start_run_report(_cfg)
+_rep.set_planned_configs(['cfgA', 'cfgB'])
+_d = FlagTunnel(); ev.wartime_stop_event.clear()
+_o = ev.run_wartime([_d], gen([evt('aa.tunnel.com'), evt('x.org')]), {'tunnel.com'}, set())
+_t = _dt.datetime.now()
+main.build_and_save_metadata(_rep.config_file('cfgA'), _o[0], _o[1], _o[2], _o[3], _o[4], _t, _t, 60, 0, {'tunnel.com'},
+                             False, '', None, '192.168.4.4', '1.1.1.1', _cfg, counts=_o[5], config_name='cfgA')
+main.save_status_result(_cfg, 'cfgB', 'skipped', 'no traffic')
+main.logger.info("progress line", extra={'progress': True})
+main.finalize_run_report('completed')
+_state = json.load(open(_rep.dir / 'run.json'))
+_log = open(_rep.dir / 'run.log').read()
+check("R1 one directory per run", _rep.dir.parent == main.RESULTS_DIR and sorted(p.name for p in (_rep.dir / 'configs').iterdir()) == ['cfgA.json', 'cfgB.json'],
+      "run dir %s with configs %s" % (_rep.dir.name, sorted(p.name for p in (_rep.dir / 'configs').iterdir())))
+check("R2 run.json tracks status per config", _state['status'] == 'completed' and [(c['name'], c['status']) for c in _state['configs']] == [('cfgA', 'completed'), ('cfgB', 'skipped')]
+      and _state['configs'][0]['detectors'][0]['f1'] == 1.0, "status=%s configs=%s" % (_state['status'], [(c['name'], c['status']) for c in _state['configs']]))
+check("R3 run.log mirrors console without progress lines", 'RUN SUMMARY' in _log and 'progress line' not in _log, "run.log has %d lines" % _log.count('\n'))
+check("R4 report.html and charts written", (_rep.dir / 'report.html').exists() and (_rep.dir / 'charts' / 'f1_by_config.png').exists(),
+      "report.html=%s f1 chart=%s" % ((_rep.dir / 'report.html').exists(), (_rep.dir / 'charts' / 'f1_by_config.png').exists()))
+sys.path.insert(0, os.path.join(ROOT, 'scripts'))
+import dashboard
+_runs = dashboard.list_runs(main.RESULTS_DIR)
+check("R5 dashboard lists runs", [r['id'] for r in _runs] == [_rep.dir.name] and _runs[0]['status'] == 'completed', "runs %s" % [(r['id'], r['status']) for r in _runs])
+main.REPORT = None
+main.RESULTS_DIR = _old_dir
+main.logger.setLevel(logging.ERROR)
 
 sys.exit(1 if FAILS else 0)

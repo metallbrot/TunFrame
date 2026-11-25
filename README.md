@@ -61,6 +61,8 @@ TunFrame/
 │   └── templates/
 ├── detection/
 │   ├── evaluate.py                # Detector loading, peacetime/wartime loops
+│   ├── reporting.py               # Per-run directory: run.json, run.log, configs/
+│   ├── report_charts.py           # Static charts and report.html of a run
 │   ├── detector_base/
 │   │   ├── detector_base.py       # Abstract base class for detectors, metrics
 │   │   ├── feature_extraction.py  # Helpers for DNS-collector events
@@ -69,6 +71,7 @@ TunFrame/
 ├── docker/
 │   └── docker-compose.yml         # Resolver, simulated DNS hierarchy, collector, replayer, tools
 └── scripts/
+    ├── dashboard.py               # Local live dashboard for runs (http://127.0.0.1:8050)
     └── repro_harness.py           # Offline sanity checks for the harness (no Docker)
 ```
 
@@ -89,7 +92,7 @@ A run has these steps:
    - **DNSExfiltrator mode** (`dnsexfiltrator.enabled: true`): the DNSExfiltrator containers run one configuration after another (baseline, sweeps, profiles). Detectors are reset at every configuration boundary; allowlists are kept.
 
    A wartime window ends when its timer expires or when every detector has flagged every tunneling domain.
-4. **Evaluation.** Each detector reports domain-level metrics for the window, and one results file is written per window (per configuration in DNSExfiltrator mode).
+4. **Evaluation.** Each detector reports domain-level metrics for the window, and one results file is written per window (per configuration in DNSExfiltrator mode) into the run's directory. At the end of the run the console shows a summary table, and charts plus `report.html` are written.
 
 Each replay is started once per run and never restarted, so wartime sees the part of a capture that follows the peacetime slice. The collector log is never truncated while the collector runs; each phase reads from the byte offset where it started.
 
@@ -233,6 +236,21 @@ See `example_config.yaml`.
 (.venv) python3 main.py
 ```
 
+Follow a run live (status per configuration, charts, log) in a second terminal:
+
+```bash
+(.venv) python3 scripts/dashboard.py            # http://127.0.0.1:8050
+(.venv) python3 scripts/dashboard.py --results ./results --port 8051
+```
+
+The dashboard only reads the results directory and listens on `127.0.0.1`. It lists every run directory, so earlier runs stay browsable.
+
+Rebuild the charts and `report.html` of a run directory:
+
+```bash
+(.venv) python3 -m detection.report_charts results/<run>
+```
+
 Offline sanity checks for the harness (no Docker needed):
 
 ```bash
@@ -243,9 +261,22 @@ Offline sanity checks for the harness (no Docker needed):
 
 ## Output
 
-Results are written to `output.logdir`, one JSON file per wartime window (per configuration in DNSExfiltrator mode). Each file contains:
+Every run gets its own directory in `output.logdir`, named `<global.name>_<YYYYmmdd-HHMMSS>`:
 
-- `metadata.run_status`: `completed`, `skipped` or `failed`, with a reason. Skipped and failed configurations also get a file.
+```
+results/<name>_<timestamp>/
+├── run.json              # run state, updated live: phase, progress, status and detector summary per configuration
+├── run.log               # console log of the run
+├── configs/<config>.json # full results of one wartime window (one per DNSExfiltrator configuration)
+├── charts/*.png          # F1, FPR and uplink leakage per configuration; F1 over each sweep
+└── report.html           # static report with the charts and the tables behind them
+```
+
+A run that fails or is interrupted after setup still gets `run.json` with status `failed` or `interrupted`, and configurations that never started are listed with their reason.
+
+Each file in `configs/` contains:
+
+- `metadata.run_status`: `completed`, `interrupted`, `skipped` or `failed`, with a reason. Skipped and failed configurations also get a file.
 - `metadata.dnsexfiltrator_config`: the exact configuration of the window (DNSExfiltrator mode).
 - `metadata.run_info`: git commit and dirty flag, Python, library and Docker versions.
 - `metadata.complete_config`: the full `config.yaml`.
