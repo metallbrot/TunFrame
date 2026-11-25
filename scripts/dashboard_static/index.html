@@ -104,12 +104,12 @@
   </section>
 
   <section class="card span-12" aria-labelledby="h-records">
-    <h2 id="h-records">DNS records <span class="muted small">share within benign and within tunnel traffic · since run start</span></h2>
+    <h2 id="h-records">DNS records <span class="muted small">each bar: share within its side (benign or tunnel) · since run start</span></h2>
     <div class="subgrid subgrid-4">
-      <div><h3>Query types</h3><div class="chart" id="chart-qtypes"></div></div>
-      <div><h3>Answer record types</h3><div class="chart" id="chart-atypes"></div></div>
-      <div><h3>Query name length <span class="muted small">characters</span></h3><div class="chart" id="chart-qlen"></div></div>
-      <div><h3>Subdomain entropy <span class="muted small">bits per character</span></h3><div class="chart" id="chart-entropy"></div></div>
+      <div><h3>Query types <span class="muted small">% of queries</span></h3><div class="chart" id="chart-qtypes"></div></div>
+      <div><h3>Answer record types <span class="muted small">% of answer records in responses</span></h3><div class="chart" id="chart-atypes"></div></div>
+      <div><h3>Query name length <span class="muted small">% of queries, by characters</span></h3><div class="chart" id="chart-qlen"></div></div>
+      <div><h3>Subdomain entropy <span class="muted small">% of queries, by bits per character</span></h3><div class="chart" id="chart-entropy"></div></div>
     </div>
     <h3>Averages</h3>
     <div class="table-wrap"><table id="dns-avg"></table></div>

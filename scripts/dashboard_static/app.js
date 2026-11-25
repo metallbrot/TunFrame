@@ -464,24 +464,26 @@ function renderSweeps() {
   });
 }
 
-function shareBars(el, block, {numeric = false, binLabel = k => k, top = 8} = {}) {
+// Share of each category within the benign and within the tunnel side; the legend
+// carries each side's count (queries or answer records), so 100 % reads as "all of them".
+function shareBars(el, block, {numeric = false, binLabel = k => k, top = 8, unit = "queries"} = {}) {
   const b = block?.b || {}, t = block?.t || {};
   const sum = o => Object.values(o).reduce((a, v) => a + v, 0), tb = sum(b), tt = sum(t);
   let keys = [...new Set([...Object.keys(b), ...Object.keys(t)])];
   keys = numeric ? keys.sort((x, y) => +x - +y)
     : keys.sort((x, y) => ((b[y] || 0) / (tb || 1) + (t[y] || 0) / (tt || 1)) - ((b[x] || 0) / (tb || 1) + (t[x] || 0) / (tt || 1))).slice(0, top);
-  const SIDES = ["Benign", "Tunnel"];
+  const SIDES = [`Benign · ${TF.fmtCompact(tb)} ${unit}`, `Tunnel · ${TF.fmtCompact(tt)} ${unit}`];
   TF.bars(el, {
-    label: "Share within benign and tunnel traffic", seriesNames: SIDES, colorOf: n => TF.series(SIDES.indexOf(n)),
+    label: `Share of ${unit} within benign and tunnel traffic`, seriesNames: SIDES, colorOf: n => TF.series(SIDES.indexOf(n)),
     yFmt: pct0, plotHeight: 140, emptyText: "Waiting for DNS details…",
-    groups: keys.map(k => ({name: binLabel(k), values: {Benign: tb ? 100 * (b[k] || 0) / tb : null, Tunnel: tt ? 100 * (t[k] || 0) / tt : null}})),
+    groups: keys.map(k => ({name: binLabel(k), values: {[SIDES[0]]: tb ? 100 * (b[k] || 0) / tb : null, [SIDES[1]]: tt ? 100 * (t[k] || 0) / tt : null}})),
   });
 }
 
 function renderRecords() {
   const detail = [...state.metrics.samples].reverse().find(s => s.dns_detail)?.dns_detail;
   shareBars($("chart-qtypes"), detail?.qtypes);
-  shareBars($("chart-atypes"), detail?.answer_types);
+  shareBars($("chart-atypes"), detail?.answer_types, {unit: "answer records"});
   shareBars($("chart-qlen"), detail?.qname_len, {numeric: true, binLabel: k => `${k}–${+k + 9}`});
   shareBars($("chart-entropy"), detail?.entropy, {numeric: true, binLabel: k => `${(+k).toFixed(1)}–${(+k + 0.5).toFixed(1)}`});
   if (!detail) { $("dns-avg").innerHTML = '<tr><td class="muted">Waiting for DNS details…</td></tr>'; return; }
