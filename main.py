@@ -20,11 +20,12 @@ warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from detection.evaluate import load_detectors, run_peacetime, run_wartime, generate_allowlists, save_results, load_global_allowlist, wartime_stop_event, transfer_complete_event, peacetime_stop_event, peacetime_done, cfg_safe_get, format_duration
+from detection.evaluate import load_detectors, run_peacetime, run_wartime, generate_allowlists, save_results, load_global_allowlist, wartime_stop_event, transfer_complete_event, request_wartime_stop, reset_wartime_stop, peacetime_stop_event, peacetime_done, cfg_safe_get, format_duration
 from detection.detector_base.readfile import readjson, log_end_offset
 from detection.detector_base.feature_extraction import normalize_domain, get_registered_domain, registered_domain_of
 from config.dns_config_generator import generate_all_configs, BIND_SERVERS, RNDC_CONTAINER_KEY_PATH
 from detection.reporting import RunReport, ReportLogHandler
+from detection.monitoring import MetricsSampler, ControlWatcher
 from detection.report_charts import build_report, fmt_bytes
 
 CONFIG_PATH = PROJECT_ROOT / "config.yaml"
@@ -38,6 +39,9 @@ DETECTOR_PATH = PROJECT_ROOT / "detection" / "detectors"
 LOGFILE = DOCKER_PATH / "dns-collector" / "logs" / "dnslogs.json"
 # DNSExfiltrator server output, appended across configurations (see docker_exec_bg_logged).
 SERVER_LOG = DOCKER_PATH / "dnsexfiltrator-server" / "volume" / "logs" / "server.log"
+CLIENT_LOG = DOCKER_PATH / "dnsexfiltrator-client" / "data" / "logs" / "client.log"
+MONITORED_CONTAINERS = ("resolver", "root-simulator", "tld-simulator", "dnscollector", "pcap-replayer",
+                        "dnsexfiltrator-server", "dnsexfiltrator-client")
 
 class UnifiedOutputHandler(logging.Handler):
     def __init__(self):
@@ -769,6 +773,84 @@ def set_phase(phase: str, detail: str = "") -> None:
         REPORT.set_phase(phase, detail)
 
 
+def set_current(**fields) -> None:
+    """Merge ``fields`` into run.json's ``current`` (the running configuration); no fields clears it."""
+    if REPORT is None:
+        return
+    current = dict(REPORT.state.get("current") or {}, **fields) if fields else None
+    REPORT.update(current=current)
+
+
+class RunControl:
+    """Requests from the dashboard: skip the running configuration or stop the run.
+
+    A request that arrives while no wartime window is open (server start,
+    peacetime) is applied when the next window opens; a stop also ends
+    peacetime and skips every remaining configuration.
+    """
+
+    def __init__(self):
+        self.stop_requested = threading.Event()
+        self._skip_pending = threading.Event()
+        self._window_open = False
+
+    def handle(self, action: str) -> None:
+        if action == "stop_run":
+            logger.warning("[!] Dashboard: stop requested - evaluating the current window, then ending the run")
+            self.stop_requested.set()
+            peacetime_stop_event.set()
+            if self._window_open:
+                request_wartime_stop("user_stop")
+        elif action == "skip_config":
+            if REPORT is not None and REPORT.state.get("phase") == "wartime":
+                logger.warning("[!] Dashboard: skipping the running configuration")
+                if self._window_open:
+                    request_wartime_stop("user_skip")
+                else:
+                    self._skip_pending.set()
+            else:
+                logger.info("[i] Dashboard: skip ignored - no wartime window is running")
+
+    def open_window(self) -> None:
+        """Arm a new wartime window and apply requests made before it opened."""
+        reset_wartime_stop()
+        self._window_open = True
+        if self.stop_requested.is_set():
+            request_wartime_stop("user_stop")
+        elif self._skip_pending.is_set():
+            self._skip_pending.clear()
+            request_wartime_stop("user_skip")
+
+    def close_window(self) -> None:
+        self._window_open = False
+        self._skip_pending.clear()
+
+
+RUN_CONTROL = RunControl()
+MONITORS = []  # MetricsSampler, ControlWatcher of the current run
+USER_END_REASONS = {"user_skip": "skipped from the dashboard", "user_stop": "run stopped from the dashboard"}
+
+
+def start_monitoring(tunneling_domains) -> None:
+    """Start the metrics sampler and the dashboard control watcher for the run."""
+    stop_monitoring()
+    sampler = MetricsSampler(REPORT, LOGFILE, {ground_truth_domain(d) for d in tunneling_domains},
+                             MONITORED_CONTAINERS).start()
+    MONITORS[:] = [sampler, ControlWatcher(REPORT, RUN_CONTROL.handle).start()]
+
+
+def stop_monitoring() -> None:
+    for monitor in MONITORS:
+        monitor.stop()
+    MONITORS.clear()
+
+
+def watch_exfil(server_log_offset=None) -> None:
+    """Follow the transfer progress of the running configuration in the metrics."""
+    if MONITORS:
+        MONITORS[0].watch_exfil(SERVER_LOG if server_log_offset is not None else None, server_log_offset or 0)
+
+
 # Default values for every DNSExfiltrator configuration.
 DNSEXFIL_DEFAULTS = {
     'file': '/data/synthetic_cc_data_100.csv',
@@ -990,6 +1072,7 @@ def run_setup(cfg: dict):
     dnsexfil_configs = get_dnsexfiltrator_configs(cfg)
     validate_dnsexfil_domains(dnsexfil_configs, tunneling_domains)
     report.set_planned_configs([c['name'] for c in dnsexfil_configs] or ["wartime"])
+    report.update(timing={"wartime_duration": wartime_duration, "peacetime_duration": peacetime_duration})
     
     # Calculate total estimated duration
     if dnsexfil_configs:
@@ -1032,6 +1115,7 @@ def run_setup(cfg: dict):
     logger.info("[+] Starting docker compose")
     compose_up("essential")
     time.sleep(5)
+    start_monitoring(tunneling_domains)
 
     return (
         wartime_duration, peacetime_duration, tunneling_domains, server_ip,
@@ -1142,6 +1226,8 @@ STOP_REASON_LABELS = {
     "timer": "ended: timer",
     "log_ended": "ended: log ended",
     "interrupted": "ended: interrupted",
+    "user_skip": "ended: skipped from the dashboard",
+    "user_stop": "ended: run stopped from the dashboard",
 }
 
 
@@ -1290,6 +1376,12 @@ def run_wartime_phase(
     # also when it is skipped.
     requested_configs = list(dnsexfil_configs or [])
 
+    if RUN_CONTROL.stop_requested.is_set():
+        for skipped in (requested_configs if dnsexfil_enabled and requested_configs else [{'name': 'wartime'}]):
+            save_status_result(cfg, skipped.get('name', 'config'), "skipped", USER_END_REASONS["user_stop"],
+                               dnsexfil_config=skipped if dnsexfil_enabled else None)
+        return alldomains, all_results
+
     # Handle DNSExfiltrator configurations sequentially
     if dnsexfil_enabled and dnsexfil_configs:
         # Verify resolver is running and accessible before starting DNSExfiltrator
@@ -1435,6 +1527,9 @@ def run_wartime_phase(
             # Run each configuration sequentially
         for config_idx, config in enumerate(dnsexfil_configs):
             config_name = config.get('name', f'config_{config_idx}')
+            if RUN_CONTROL.stop_requested.is_set():
+                save_status_result(cfg, config_name, "skipped", USER_END_REASONS["user_stop"], dnsexfil_config=config)
+                continue
             
             # Check if containers still exist at the start of each config
             server_exists_at_start = container_exists("dnsexfiltrator-server")
@@ -1458,6 +1553,9 @@ def run_wartime_phase(
             
             logger.info(f"\n[+] --- Running DNSExfiltrator configuration: {config_name} ({config_idx + 1}/{len(dnsexfil_configs)}) ---")
             set_phase("wartime", config_name)
+            REPORT.update(current={"name": config_name, "index": config_idx + 1, "total": len(dnsexfil_configs),
+                                   "started": datetime.now().isoformat(timespec="seconds"), "window_started": None,
+                                   "parameters": {k: v for k, v in config.items() if k != 'name'}})
             
             # Use config domains as tunneling domains for this run
             config_tunneling_domains_set = {ground_truth_domain(d) for d in domains} if domains else tunneling_domains_set
@@ -1492,6 +1590,8 @@ def run_wartime_phase(
             # DNSExfiltrator; the log is never truncated while the collector runs.
             config_offset = log_end_offset(LOGFILE)
             server_log_offset = log_end_offset(SERVER_LOG)
+            set_current(server_log_offset=server_log_offset, client_log_offset=log_end_offset(CLIENT_LOG))
+            watch_exfil(server_log_offset)
             
             # Reset state for this configuration - create fresh log generator
             config_start_timestamp = datetime.now()
@@ -1547,8 +1647,9 @@ def run_wartime_phase(
             # The window (timer and background traffic) starts before the
             # one-shot client, so benign/wildcard traffic overlaps the
             # exfiltration instead of following it.
-            wartime_stop_event.clear()
+            RUN_CONTROL.open_window()
             war_timer = PhaseTimer(wartime_stop_event, wartime_duration).start()
+            set_current(window_started=datetime.now().isoformat(timespec="seconds"))
             transfer_complete_event.clear()
             transfer_watcher = (
                 TransferWatcher(SERVER_LOG, server_log_offset, transfer_complete_event).start()
@@ -1700,6 +1801,7 @@ def run_wartime_phase(
                     logger.error("[!] DNSExfiltrator client is not running and produced no tunnel traffic!")
                     logger.error(f"[!] Skipping configuration: {config_name}")
                     war_timer.cancel()
+                    RUN_CONTROL.close_window()
                     if transfer_watcher:
                         transfer_watcher.cancel()
                     managed_replay_stop_all()
@@ -1714,6 +1816,7 @@ def run_wartime_phase(
             if not check_process_running("dnsexfiltrator-server", "dnsExfiltrator.py"):
                 logger.error(f"[!] DNSExfiltrator server is not running! Skipping config: {config_name}")
                 war_timer.cancel()
+                RUN_CONTROL.close_window()
                 if transfer_watcher:
                     transfer_watcher.cancel()
                 managed_replay_stop_all()
@@ -1739,6 +1842,7 @@ def run_wartime_phase(
                 )
             finally:
                 war_timer.cancel()
+                RUN_CONTROL.close_window()
                 if transfer_watcher:
                     transfer_watcher.cancel()
                 # Stop this window's background replay so the next config starts
@@ -1762,7 +1866,8 @@ def run_wartime_phase(
             
             # Build metadata and save results for this configuration
             config_end_timestamp = datetime.now()
-            transfer_incomplete = bool(transfer_watcher) and transfer_watcher.completed_after is None
+            user_end = USER_END_REASONS.get(counts.get("stop_reason"))
+            transfer_incomplete = bool(transfer_watcher) and transfer_watcher.completed_after is None and not user_end
             if transfer_incomplete and not counts.get("interrupted"):
                 logger.warning(f"[!] {config_name}: the server never reported the file as saved - "
                                "the exfiltration did not complete (see the server and client logs)")
@@ -1791,8 +1896,9 @@ def run_wartime_phase(
                 dnsexfil_config=dict(config, expansion_factor_used=config_expansion_factor(config)),
                 config_name=config_name,
                 wartime_end=wartime_end_info(counts, transfer_watcher),
-                status="interrupted" if counts.get("interrupted") else "completed",
+                status="interrupted" if counts.get("interrupted") or user_end else "completed",
                 status_reason=("Ctrl+C during wartime; partial window" if counts.get("interrupted")
+                               else user_end if user_end
                                else "exfiltration did not complete within the window" if transfer_incomplete
                                else "")
             )
@@ -1817,6 +1923,9 @@ def run_wartime_phase(
             docker_exec("dnsexfiltrator-client", "pkill", "-f", "DNSExfiltrator.exe", check=False)
             time.sleep(1)
         
+        watch_exfil(None)
+        set_current()
+
         # Update the alldomains with all domains seen across all configs
         alldomains.update(all_seen_domains)
         
@@ -1829,8 +1938,11 @@ def run_wartime_phase(
         # Fresh generator for wartime, starting where wartime began in the log
         wartime_log_generator = readjson(str(LOGFILE), start_offset=wartime_offset)
         
-        wartime_stop_event.clear()
+        RUN_CONTROL.open_window()
         war_timer = PhaseTimer(wartime_stop_event, wartime_duration).start()
+        REPORT.update(current={"name": "wartime", "index": 1, "total": 1,
+                               "started": datetime.now().isoformat(timespec="seconds"),
+                               "window_started": datetime.now().isoformat(timespec="seconds")})
 
         # Start benign/wildcard for this window, from the wartime segment start.
         start_background_replays()
@@ -1844,8 +1956,10 @@ def run_wartime_phase(
             )
         finally:
             war_timer.cancel()
+            RUN_CONTROL.close_window()
             managed_replay_stop_all()
-        
+        set_current()
+
         end_timestamp = datetime.now()
         
         # Store results
@@ -1880,8 +1994,9 @@ def run_wartime_phase(
             cfg=cfg,
             counts=counts,
             wartime_end=wartime_end_info(counts),
-            status="interrupted" if counts.get("interrupted") else "completed",
-            status_reason="Ctrl+C during wartime; partial window" if counts.get("interrupted") else ""
+            status="interrupted" if counts.get("interrupted") or counts.get("stop_reason") in USER_END_REASONS else "completed",
+            status_reason=("Ctrl+C during wartime; partial window" if counts.get("interrupted")
+                           else USER_END_REASONS.get(counts.get("stop_reason"), ""))
         )
         if counts.get("interrupted"):
             raise KeyboardInterrupt
@@ -1893,6 +2008,7 @@ def finalize_run_report(status: str, reason: str = "") -> None:
     """Close the run report: final status, summary, charts and report.html."""
     if REPORT is None:
         return
+    stop_monitoring()
     REPORT.finish(status, reason)
     log_run_summary(REPORT)
     try:
@@ -1919,7 +2035,9 @@ def _show_partial_results(all_experiment_results: list, peace_logcount: int, war
 
 
 def main():
+    global RUN_CONTROL
     cfg = load_config(CONFIG_PATH)
+    RUN_CONTROL = RunControl()
     
     # Reset events
     peacetime_stop_event.clear()
@@ -1963,7 +2081,8 @@ def main():
             server_ip, public_resolver, cfg, results_file, dnsexfil_configs,
             results_sink=all_experiment_results, peacetime_packets=peacetime_packets
         )
-        run_status, run_reason = "completed", ""
+        run_status, run_reason = (("interrupted", "stopped from the dashboard")
+                                  if RUN_CONTROL.stop_requested.is_set() else ("completed", ""))
 
     except KeyboardInterrupt:
         logger.info("\n[!] Interrupted by user - shutting down...")

@@ -5,6 +5,9 @@ Every run writes one directory ``<results>/<name>_<YYYYmmdd-HHMMSS>/``::
     run.json             run state, updated live: phase, progress, one entry per
                          configuration with its status and detector summary
     run.log              console log of the run (without progress lines)
+    metrics.jsonl        one sample every few seconds: DNS rates, response codes,
+                         top domains, exfiltration progress, CPU and memory
+    control.json         requests from the dashboard (skip configuration, stop run)
     configs/<name>.json  full results of one wartime window / configuration
     charts/*.png         static charts (written at the end of the run)
     report.html          static report embedding the charts
@@ -93,12 +96,16 @@ class RunReport:
             "status_reason": "",
             "phase": "setup",
             "phase_detail": "",
+            "phase_started": started.isoformat(timespec="seconds"),
             "started": started.isoformat(timespec="seconds"),
             "finished": None,
             "updated": started.isoformat(timespec="seconds"),
             "progress": "",
             "planned_configs": [],
             "configs": [],
+            "timing": {},
+            "current": None,
+            "control": None,
             "run_info": run_info,
             "complete_config": complete_config,
         }
@@ -112,11 +119,26 @@ class RunReport:
             self.state["planned_configs"] = list(names)
         self._write()
 
+    def update(self, **fields) -> None:
+        """Set top-level run.json fields (timing, current, control)."""
+        with self._lock:
+            self.state.update(fields)
+        self._write()
+
+    @property
+    def metrics_path(self) -> Path:
+        return self.dir / "metrics.jsonl"
+
+    @property
+    def control_path(self) -> Path:
+        return self.dir / "control.json"
+
     def set_phase(self, phase: str, detail: str = "") -> None:
         """Record the current phase (setup, peacetime, wartime, evaluation)."""
         with self._lock:
             self.state["phase"] = phase
             self.state["phase_detail"] = detail
+            self.state["phase_started"] = datetime.now().isoformat(timespec="seconds")
             self.state["progress"] = ""
         self._write()
 
@@ -168,6 +190,7 @@ class RunReport:
             self.state["phase"] = "done"
             self.state["phase_detail"] = ""
             self.state["progress"] = ""
+            self.state["current"] = None
             self.state["finished"] = datetime.now().isoformat(timespec="seconds")
         self._write()
 

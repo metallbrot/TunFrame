@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="tunframe-token" content="{{TOKEN}}">
+<title>TunFrame Operations</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="brand-mark" aria-hidden="true"></span>TUNFRAME <span class="brand-sub">OPS</span></div>
+  <label class="run-pick"><span class="muted">Run</span> <select id="run-select" aria-label="Run"></select></label>
+  <span id="live" class="live" hidden><span class="live-dot" aria-hidden="true"></span>LIVE</span>
+  <span class="spacer"></span>
+  <span id="clock" class="clock mono" aria-label="Local time"></span>
+  <button id="btn-skip" class="btn" hidden>Skip configuration</button>
+  <button id="btn-stop" class="btn btn-danger" hidden>Stop run</button>
+  <a id="report-link" class="btn btn-ghost" target="_blank" rel="noopener" hidden>Static report</a>
+  <button id="theme-toggle" class="btn btn-ghost" aria-label="Toggle light and dark theme">Light</button>
+</header>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<main class="grid">
+  <section class="kpis span-12" aria-label="Key figures">
+    <div class="kpi" id="kpi-status"><div class="kpi-label">Status</div><div class="kpi-value" id="k-status">–</div><div class="kpi-sub" id="k-phase"></div></div>
+    <div class="kpi"><div class="kpi-label">Running time</div><div class="kpi-value mono" id="k-elapsed">–</div><div class="kpi-sub" id="k-started"></div></div>
+    <div class="kpi"><div class="kpi-label">Estimated end</div><div class="kpi-value mono" id="k-eta">–</div><div class="kpi-sub" id="k-eta-sub"></div></div>
+    <div class="kpi"><div class="kpi-label">Configuration</div><div class="kpi-value mono" id="k-config">–</div><div class="kpi-sub ellipsis" id="k-config-name"></div></div>
+    <div class="kpi"><div class="kpi-label">Exfiltration</div><div class="kpi-value mono" id="k-exfil">–</div>
+      <div class="meter" aria-hidden="true"><div class="meter-fill" id="k-exfil-bar"></div></div><div class="kpi-sub" id="k-exfil-sub"></div></div>
+    <div class="kpi"><div class="kpi-label">DNS queries / s</div><div class="kpi-value mono" id="k-qps">–</div><div class="kpi-sub" id="k-qps-sub"></div></div>
+  </section>
+
+  <section class="card span-4" aria-labelledby="h-current">
+    <h2 id="h-current">Current configuration</h2>
+    <div id="current"></div>
+    <details id="all-configs">
+      <summary>All configurations <span id="all-count" class="muted"></span></summary>
+      <div class="table-wrap"><table id="config-table"></table></div>
+    </details>
+  </section>
+
+  <section class="card span-8" aria-labelledby="h-dns">
+    <h2 id="h-dns">DNS traffic <span class="muted small">queries per second</span></h2>
+    <div class="chart" id="chart-dns"></div>
+  </section>
+
+  <section class="card span-4" aria-labelledby="h-exfil">
+    <h2 id="h-exfil">Transfer progress <span class="muted small" id="exfil-config"></span></h2>
+    <div class="chart" id="chart-exfil"></div>
+  </section>
+  <section class="card span-4" aria-labelledby="h-cpu">
+    <h2 id="h-cpu">CPU <span class="muted small">% of one core</span></h2>
+    <div class="chart" id="chart-cpu"></div>
+  </section>
+  <section class="card span-4" aria-labelledby="h-mem">
+    <h2 id="h-mem">Memory <span class="muted small">MB</span></h2>
+    <div class="chart" id="chart-mem"></div>
+  </section>
+
+  <section class="card span-8" aria-labelledby="h-results">
+    <h2 id="h-results"><span id="results-title">Detection results</span><span class="spacer"></span>
+      <span role="group" aria-label="Metric" id="metric-buttons" class="seg"></span>
+      <button id="table-toggle" class="btn btn-small" aria-pressed="false">Table</button></h2>
+    <div class="chart" id="chart-results"></div>
+    <div class="table-wrap" id="results-table" hidden></div>
+  </section>
+
+  <section class="card span-4" aria-labelledby="h-dnsdetail">
+    <h2 id="h-dnsdetail">DNS breakdown</h2>
+    <h3>Response codes</h3>
+    <div id="rcodes"></div>
+    <h3>Top queried domains</h3>
+    <div id="top-domains"></div>
+  </section>
+
+  <section class="card span-12" aria-labelledby="h-heat">
+    <h2 id="h-heat">F1 by detector and configuration</h2>
+    <div class="chart" id="chart-heat"></div>
+  </section>
+
+  <section class="card span-12" aria-labelledby="h-logs">
+    <h2 id="h-logs">Logs<span class="spacer"></span>
+      <span role="tablist" class="seg" id="log-tabs">
+        <button role="tab" data-log="run" aria-selected="true">Run</button>
+        <button role="tab" data-log="server" aria-selected="false">Exfil server</button>
+        <button role="tab" data-log="client" aria-selected="false">Exfil client</button>
+      </span>
+      <label class="muted small follow"><input type="checkbox" id="follow" checked> Follow</label></h2>
+    <pre class="log mono" id="log" tabindex="0"></pre>
+  </section>
+</main>
+<script src="/static/charts.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

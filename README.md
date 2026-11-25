@@ -62,6 +62,7 @@ TunFrame/
 ├── detection/
 │   ├── evaluate.py                # Detector loading, peacetime/wartime loops
 │   ├── reporting.py               # Per-run directory: run.json, run.log, configs/
+│   ├── monitoring.py              # Live metrics and dashboard control requests
 │   ├── report_charts.py           # Static charts and report.html of a run
 │   ├── detector_base/
 │   │   ├── detector_base.py       # Abstract base class for detectors, metrics
@@ -72,6 +73,7 @@ TunFrame/
 │   └── docker-compose.yml         # Resolver, simulated DNS hierarchy, collector, replayer, tools
 └── scripts/
     ├── dashboard.py               # Local live dashboard for runs (http://127.0.0.1:8050)
+    ├── dashboard_static/          # Dashboard page, styles and charts
     └── repro_harness.py           # Offline sanity checks for the harness (no Docker)
 ```
 
@@ -244,7 +246,16 @@ Follow a run live (status per configuration, charts, log) in a second terminal:
 (.venv) python3 scripts/dashboard.py --results ./results --port 8051
 ```
 
-The dashboard only reads the results directory and listens on `127.0.0.1`. It lists every run directory, so earlier runs stay browsable.
+The dashboard listens on `127.0.0.1` only and lists every run directory, so earlier runs stay browsable. Dark is the default theme; use the toggle or `?theme=light`. It shows:
+
+- **Key figures:** status and phase, running time, estimated end (from the average duration of finished configurations, plus the latest possible end), configuration `i / n`, DNSExfiltrator transfer progress, DNS queries per second and the tunnel share.
+- **Current configuration** with its parameters and window progress; all configurations (status, how each window ended, F1 per detector) in an expandable box.
+- **Charts:** DNS queries per second (all vs. tunnel) over the run with configuration boundaries, transfer progress of the running configuration, CPU and memory per container and of `main.py`, detection results per configuration (F1, precision, recall, FPR, leakage; table view), and an F1 heatmap of detector × configuration.
+- **DNS breakdown:** response codes and the most queried registered domains (tunnel domains marked).
+- **Logs:** the run log and the DNSExfiltrator server and client output of the running configuration.
+- **Controls:** *Skip configuration* evaluates the running window up to now, saves it as `interrupted` and continues with the next one; *Stop run* does the same and skips all remaining configurations. Both ask for confirmation. Requests carry a token embedded in the page and are only accepted from the dashboard's own origin; the run picks them up from `control.json` in its directory.
+
+The metrics come from `metrics.jsonl`, which `main.py` writes into the run directory every two seconds (DNS rates from the collector log, transfer progress from the server log, `docker stats`).
 
 Rebuild the charts and `report.html` of a run directory:
 
@@ -268,6 +279,8 @@ Every run gets its own directory in `output.logdir`, named `<global.name>_<YYYYm
 results/<name>_<timestamp>/
 ├── run.json              # run state, updated live: phase, progress, status and detector summary per configuration
 ├── run.log               # console log of the run
+├── metrics.jsonl         # live metrics every 2 s: DNS rates, response codes, top domains, transfer progress, CPU/memory
+├── control.json          # requests from the dashboard (skip configuration, stop run), if any
 ├── configs/<config>.json # full results of one wartime window (one per DNSExfiltrator configuration)
 ├── charts/*.png          # F1, FPR and uplink leakage per configuration; F1 over each sweep
 └── report.html           # static report with the charts and the tables behind them

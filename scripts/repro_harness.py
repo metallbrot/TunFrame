@@ -376,6 +376,67 @@ check("B3 flush runs before each server start", _war.index("if flush_tunnel_cach
       and _war.index("server_log_offset = log_end_offset(SERVER_LOG)") > _war.index("if flush_tunnel_cache(domains):"),
       "flush after stopping the previous server, before offsets are taken and the new server starts")
 
+# Live monitoring and dashboard controls
+from detection import monitoring as mon
+from detection.reporting import RunReport
+_md = tempfile.mkdtemp()
+_srv = os.path.join(_md, 'server.log')
+with open(_srv, 'wb') as f: f.write(b"[==] 99.0%\tReceiving\t\r\n")              # previous configuration
+_xp = mon.ExfilProgress(_srv, os.path.getsize(_srv))
+with open(_srv, 'ab') as f: f.write(b"\x1b[1;34m[+] File size: 3030 bytes\x1b[0m\n[=-] 12.5%\tReceiving\t\r[==-] 40.0%\tReceiving\t\r")
+_p1 = _xp.poll()
+with open(_srv, 'ab') as f: f.write(b"\n[+] All data received!\n[+] File saved successfully\n")
+_p2 = _xp.poll()
+check("O1 transfer progress from the server log", _p1 == {'percent': 40.0, 'file_size': 3030, 'saved': False} and _p2['percent'] == 100.0 and _p2['saved'],
+      "mid-transfer %s, after save %s" % (_p1, _p2))
+
+_mrep = RunReport(_pl.Path(_md), 'monitor test')
+_dns = os.path.join(_md, 'dns.json'); open(_dns, 'w').close()
+_smp = mon.MetricsSampler(_mrep, _dns, {'tunnel.com'}, [], interval=0.3, resource_interval=60).start()
+with open(_dns, 'a') as f:
+    for q in ['a.example.org'] * 4 + ['x1.tunnel.com', 'x2.tunnel.com']:
+        f.write(json.dumps(evt(q)) + "\n")
+    _nx = resp('a.example.org', []); _nx['dns']['rcode'] = 'NXDOMAIN'; f.write(json.dumps(_nx) + "\n")
+time.sleep(1.2); _smp.stop()
+_samples = [json.loads(l) for l in open(_mrep.metrics_path)]
+_q = sum(s['dns']['queries'] for s in _samples); _tq = sum(s['dns']['tunnel_queries'] for s in _samples)
+check("O2 metrics count DNS traffic", _q == 6 and _tq == 2 and _samples[-1]['rcodes'].get('NXDOMAIN') == 1
+      and _samples[-1]['top_domains'][0] == ['example.org', 4, False] and _samples[-1]['host']['cpu'] is not None,
+      "queries=%d tunnel=%d rcodes=%s top=%s" % (_q, _tq, _samples[-1]['rcodes'], _samples[-1]['top_domains'][:2]))
+
+_rc = main.RunControl(); _old_report = main.REPORT; main.REPORT = _mrep
+_mrep.set_phase('wartime', 'cfg1'); _rc.open_window()
+_cw = mon.ControlWatcher(_mrep, _rc.handle, poll_interval=0.05).start()
+_mrep.control_path.write_text(json.dumps({"id": 1, "action": "skip_config"}))
+ev.wartime_stop_event.wait(2)
+_os = ev.run_wartime([Never()], gen([evt('a.org')]), {'tunnel.com'}, set())
+_mrep.control_path.write_text(json.dumps({"id": 2, "action": "stop_run"}))
+_rc.stop_requested.wait(2); time.sleep(0.2)
+check("O3 dashboard skip and stop reach the run", _os[5]['stop_reason'] == 'user_skip' and _rc.stop_requested.is_set()
+      and ev.peacetime_stop_event.is_set() and _mrep.state['control']['id'] == 2 and _mrep.state['control']['accepted'],
+      "skip -> stop_reason=%s; stop -> stop_requested=%s, ack=%s" % (_os[5]['stop_reason'], _rc.stop_requested.is_set(), _mrep.state['control']))
+_cw.stop(); _rc.close_window(); main.REPORT = _old_report; ev.peacetime_stop_event.clear(); ev.reset_wartime_stop()
+
+sys.path.insert(0, os.path.join(ROOT, 'scripts'))
+import dashboard as _db, urllib.request, urllib.error
+from http.server import ThreadingHTTPServer
+_db.DashboardHandler.results_dir = _pl.Path(_md).resolve(); _db.DashboardHandler.token = 'tok123'
+_httpd = ThreadingHTTPServer(('127.0.0.1', 0), _db.DashboardHandler); _db.DashboardHandler.port = _httpd.server_address[1]
+threading.Thread(target=_httpd.serve_forever, daemon=True).start()
+_base = 'http://127.0.0.1:%d' % _db.DashboardHandler.port
+def _post(headers):
+    req = urllib.request.Request(_base + '/api/run/%s/control' % _mrep.dir.name, data=b'{"action": "skip_config"}', method='POST', headers=headers)
+    try: return urllib.request.urlopen(req).status
+    except urllib.error.HTTPError as e: return e.code
+_codes = (_post({}), _post({'X-TunFrame-Token': 'tok123', 'Origin': 'http://evil.example'}), _post({'X-TunFrame-Token': 'tok123', 'Origin': _base}))
+_page = urllib.request.urlopen(_base + '/').read().decode()
+_httpd.shutdown()
+check("O4 dashboard control needs token and local origin", _codes == (403, 403, 200) and json.load(open(_mrep.control_path))['id'] == 3 and 'tok123' in _page,
+      "no token / foreign origin / valid -> %s" % (_codes,))
+_rc2 = _db.read_chunk(_pl.Path(_srv), 0, 30, align_lines=True)
+check("O5 dashboard never serves partial lines; progress bars collapse", _rc2['data'].endswith(b"\n") and _db.clean_tool_log("\x1b[1m[=] 10%\r[==] 20%\x1b[0m\ndone") == "[==] 20%\ndone",
+      "chunk ends at a line break, '\\r' progress collapses to its last state")
+
 # Per-run report directory, charts, report.html and dashboard API
 import pathlib as _pl2, datetime as _dt
 _old_dir = main.RESULTS_DIR

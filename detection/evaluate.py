@@ -170,7 +170,8 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
         ``total_responses``, ``tunnel_queries`` and ``tunnel_responses``, plus
         ``interrupted`` (True if Ctrl+C ended the window early) and
         ``stop_reason``: ``transfer_complete``, ``all_detected``, ``timer``,
-        ``log_ended`` or ``interrupted``.
+        ``log_ended``, ``interrupted``, or a reason passed to
+        ``request_wartime_stop`` (``user_skip``, ``user_stop``).
     """
     alldomains = set()
     tunneling_domains_seen = {domain: False for domain in tunneling_domains}
@@ -258,7 +259,8 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
         interrupted = True
         logger.warning("\n[!] Interrupted: evaluating the partial wartime window")
     counts["interrupted"] = interrupted
-    counts["stop_reason"] = "interrupted" if interrupted else (stop_reason or "timer")
+    external, _external_stop["reason"] = _external_stop["reason"], None
+    counts["stop_reason"] = "interrupted" if interrupted else (stop_reason or external or "timer")
     
     seen_tunnels = set([domain for domain, seen in tunneling_domains_seen.items() if seen])
     
@@ -314,6 +316,20 @@ def format_duration(seconds: float) -> str:
 wartime_stop_event = threading.Event()
 # Set when the exfiltrated file has arrived at the server (see main.TransferWatcher).
 transfer_complete_event = threading.Event()
+# Reason for a stop requested from outside the timer (dashboard controls).
+_external_stop = {"reason": None}
+
+
+def reset_wartime_stop() -> None:
+    """Clear the stop event and any pending external stop reason (new window)."""
+    _external_stop["reason"] = None
+    wartime_stop_event.clear()
+
+
+def request_wartime_stop(reason: str) -> None:
+    """End the running wartime window now and record ``reason`` as its stop reason."""
+    _external_stop["reason"] = reason
+    wartime_stop_event.set()
 peacetime_stop_event = threading.Event()
 peacetime_done = threading.Event()
 
