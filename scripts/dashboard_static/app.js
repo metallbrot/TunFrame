@@ -18,6 +18,18 @@ const METRICS = [
   {key: "traffic_volume_up_bytes", label: "Leak up", lower: true, fmt: TF.fmtBytes, cell: TF.fmtBytes, axis: TF.fmtBytes},
   {key: "runtime", label: "Runtime", lower: true, fmt: v => `${v.toFixed(1)} s`, cell: v => `${v.toFixed(1)}s`},
 ];
+// Detector ranking columns: exfiltration volume first, then detection quality.
+const RANK_COLUMNS = [
+  {key: "ulv_percent", label: "ULV %", fmt: pct, lower: true, meter: 100},
+  {key: "net_up_bytes", label: "Net leak", fmt: TF.fmtBytes, lower: true},
+  {key: "f1", label: "Mean F1", fmt: v => v.toFixed(3), meter: 1},
+  {key: "precision", label: "Precision", fmt: v => v.toFixed(3)},
+  {key: "recall", label: "Recall", fmt: v => v.toFixed(3)},
+  {key: "fpr", label: "FPR", fmt: v => v.toPrecision(3), lower: true},
+  {key: "dlv_percent", label: "DLV %", fmt: pct, lower: true},
+  {key: "detected", label: "Detected"},
+  {key: "runtime", label: "Runtime", fmt: v => `${v.toFixed(1)} s`, lower: true},
+];
 const axisFmt = m => m.axis || (m.max === 1 ? (v => v.toFixed(1)) : TF.fmtCompact);
 // Resource series keep their color across runs: color follows the entity.
 const RESOURCE_ENTITIES = ["main.py", "resolver", "root-simulator", "tld-simulator", "dnscollector",
@@ -32,7 +44,8 @@ const state = {
   runs: [], runId: null, run: null, skew: 0, skewSet: false,
   metrics: {runId: null, offset: -1, samples: []},
   log: {tab: "run", runId: null, configKey: null, offsets: {run: -1, server: -1, client: -1}, text: {run: "", server: "", client: ""}},
-  metric: METRICS[0], heatMetric: METRICS[0], detector: null, sweep: null,
+  metric: METRICS[0], heatMetric: METRICS[0], sweepMetric: METRICS[0], detector: null, sweep: null,
+  rankSort: {key: "ulv_percent", dir: "asc"},
   showTable: false, lastControlId: null, timer: null,
 };
 
@@ -376,22 +389,33 @@ function renderDetectors() {
   }
   view.hidden = false;
   const mean = (d, k) => meanOf(configs, d, k);
-  const ranked = [...dets].sort((a, b) => (mean(b, "f1") ?? -1) - (mean(a, "f1") ?? -1));
+  const detected = d => configs.filter(c => (valueOf(c, d, "tp") ?? 0) > 0).length;
+  const runtime = d => configs.reduce((a, c) => a + (valueOf(c, d, "runtime") || 0), 0);
+  const value = (d, col) => col.key === "detected" ? detected(d) : col.key === "runtime" ? runtime(d) : mean(d, col.key);
+  // Default order: least exfiltrated volume first, then the best F1 (see RANK_COLUMNS).
+  const {key, dir} = state.rankSort, sortCol = RANK_COLUMNS.find(c => c.key === key) || RANK_COLUMNS[0];
+  const cmp = (a, b, col, direction) => {
+    const va = value(a, col), vb = value(b, col);
+    if (va == null || vb == null) return (va == null) - (vb == null);   // missing values last
+    return direction === "asc" ? va - vb : vb - va;
+  };
+  const byKey = k => RANK_COLUMNS.find(c => c.key === k);
+  const ranked = [...dets].sort((a, b) => cmp(a, b, sortCol, dir) || cmp(a, b, byKey("ulv_percent"), "asc")
+    || cmp(a, b, byKey("f1"), "desc") || a.localeCompare(b));
   if (!dets.includes(state.detector)) state.detector = ranked[0];
   const det = state.detector, sw = d => `<span class="swatch" style="background:${detectorColor(d)}"></span>`;
-  const detected = d => configs.filter(c => (valueOf(c, d, "tp") ?? 0) > 0).length;
-  $("leaderboard").innerHTML = `<tr><th>#</th><th class="l">Detector</th><th class="l">Mean F1</th><th>Precision</th><th>Recall</th>
-      <th>FPR</th><th>ULV %</th><th>DLV %</th><th>Detected</th><th>Runtime</th></tr>`
-    + ranked.map((d, i) => {
-      const f1 = mean(d, "f1");
-      return `<tr data-det="${TF.esc(d)}" class="${d === det ? "is-selected" : ""}" tabindex="0"><td>${i + 1}</td>
-        <td class="l">${sw(d)}${TF.esc(d)}</td>
-        <td class="l mono">${show(f1, v => v.toFixed(3))}<span class="mini-meter" aria-hidden="true"><i style="width:${100 * (f1 || 0)}%"></i></span></td>
-        <td>${show(mean(d, "precision"), v => v.toFixed(3))}</td><td>${show(mean(d, "recall"), v => v.toFixed(3))}</td>
-        <td>${show(mean(d, "fpr"), v => v.toPrecision(3))}</td><td>${show(mean(d, "ulv_percent"), pct)}</td>
-        <td>${show(mean(d, "dlv_percent"), pct)}</td><td>${detected(d)} / ${configs.length}</td>
-        <td>${configs.reduce((a, c) => a + (valueOf(c, d, "runtime") || 0), 0).toFixed(1)} s</td></tr>`;
-    }).join("");
+  const head = RANK_COLUMNS.map(c => {
+    const active = c.key === sortCol.key, arrow = active ? (dir === "asc" ? " ▲" : " ▼") : "";
+    return `<th class="${c.align || ""}" aria-sort="${active ? (dir === "asc" ? "ascending" : "descending") : "none"}">
+      <button class="sort" data-sort="${c.key}" title="Sort by ${c.label}${c.lower ? " (lower is better)" : ""}">${c.label}${arrow}</button></th>`;
+  }).join("");
+  $("leaderboard").innerHTML = `<tr><th>#</th><th class="l">Detector</th>${head}</tr>`
+    + ranked.map((d, i) => `<tr data-det="${TF.esc(d)}" class="${d === det ? "is-selected" : ""}" tabindex="0"><td>${i + 1}</td>
+        <td class="l">${sw(d)}${TF.esc(d)}</td>${RANK_COLUMNS.map(c => {
+          const v = value(d, c);
+          const meter = c.meter ? `<span class="mini-meter" aria-hidden="true"><i style="width:${Math.min(100, Math.max(0, 100 * (v || 0) / c.meter))}%"></i></span>` : "";
+          return `<td class="${c.align || ""} mono">${c.key === "detected" ? `${v} / ${configs.length}` : show(v, c.fmt)}${meter}</td>`;
+        }).join("")}</tr>`).join("");
   $("det-buttons").innerHTML = dets.map(d => `<button data-det="${TF.esc(d)}" aria-pressed="${d === det}">${sw(d)}${TF.esc(d)}</button>`).join("");
   $("det-name").innerHTML = `${sw(det)}${TF.esc(det)}`;
   const kpi = (label, value) => `<div class="mini-kpi"><div class="kpi-label">${label}</div><div class="kpi-value mono">${value}</div></div>`;
@@ -449,7 +473,7 @@ function sweepsOf(run) {
 }
 
 function renderSweeps() {
-  const run = state.run, m = state.metric, sweeps = sweepsOf(run);
+  const run = state.run, m = state.sweepMetric, sweeps = sweepsOf(run);
   if (!sweeps.length) {
     $("sweep-buttons").innerHTML = ""; $("sweep-title").textContent = "Sweeps";
     return TF.empty($("chart-sweep"), "This run has no parameter sweep");
@@ -582,7 +606,8 @@ function metricButtons(id, key, render) {
     if (state.run) render();
   });
 }
-metricButtons("metric-buttons", "metric", () => { renderResults(); renderSweeps(); });
+metricButtons("metric-buttons", "metric", renderResults);
+metricButtons("sweep-metric-buttons", "sweepMetric", renderSweeps);
 metricButtons("heat-buttons", "heatMetric", renderHeat);
 function selectDetector(ev) {
   const el = ev.target.closest("[data-det]"); if (!el) return;
@@ -590,7 +615,17 @@ function selectDetector(ev) {
   if (state.run) renderDetectors();
 }
 $("det-buttons").addEventListener("click", selectDetector);
-$("leaderboard").addEventListener("click", selectDetector);
+$("leaderboard").addEventListener("click", ev => {
+  const sort = ev.target.closest("button.sort");
+  if (sort) {
+    const col = RANK_COLUMNS.find(c => c.key === sort.dataset.sort), same = state.rankSort.key === col.key;
+    state.rankSort = {key: col.key, dir: same ? (state.rankSort.dir === "asc" ? "desc" : "asc")
+                                               : (col.lower ? "asc" : "desc")};
+    if (state.run) renderDetectors();
+    return;
+  }
+  selectDetector(ev);
+});
 $("leaderboard").addEventListener("keydown", ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); selectDetector(ev); } });
 $("sweep-buttons").addEventListener("click", ev => {
   const b = ev.target.closest("button"); if (!b) return;

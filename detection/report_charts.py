@@ -460,22 +460,28 @@ def render_html(run_dir: Path, state: dict, charts: list) -> Path:
                  f"<dt>Finished</dt><dd>{e(str(state.get('finished')))}</dd>"
                  f"<dt>Commit</dt><dd>{e(commit)}</dd></dl></div>")
 
-    # Detector comparison: mean of every metric over the finished configurations.
+    # Detector comparison: mean of every metric over the finished configurations,
+    # least exfiltrated volume first, then the best F1 (as the dashboard ranking).
     if completed and detectors:
-        parts.append("<h2>Detector comparison</h2><div class='card'><table><tr><th>Detector</th><th>Mean F1</th>"
-                     "<th>Precision</th><th>Recall</th><th>FPR</th><th>ULV %</th><th>DLV %</th>"
-                     "<th>Detected</th><th>Runtime</th></tr>")
-        ranked = sorted(detectors, key=lambda d: -(_mean([_value(c, d, "f1") for c in completed]) or 0))
-        for d in ranked:
+        parts.append("<h2>Detector comparison</h2><div class='card'><table><tr><th>#</th><th class='l'>Detector</th>"
+                     "<th>ULV %</th><th>Net leak</th><th>Mean F1</th><th>Precision</th><th>Recall</th><th>FPR</th>"
+                     "<th>DLV %</th><th>Detected</th><th>Runtime</th></tr>")
+        mean_of = lambda d, key: _mean([_value(c, d, key) for c in completed])
+        last = float("inf")
+        ranked = sorted(detectors, key=lambda d: (mean_of(d, "ulv_percent") if mean_of(d, "ulv_percent") is not None else last,
+                                                  -(mean_of(d, "f1") or 0), d))
+        for rank, d in enumerate(ranked, 1):
             col = lambda key: [_value(c, d, key) for c in completed]
-            f1 = _mean(col("f1"))
+            f1, net = _mean(col("f1")), _mean(col("net_up_bytes"))
             detected = sum(1 for c in completed if (_value(c, d, "tp") or 0) > 0)
             meter = f"<span class='meter'><i style='width:{100 * (f1 or 0):.0f}%'></i></span>"
-            parts.append(f"<tr><td>{swatch(d)}{e(d)}</td><td>{_fmt(f1)}{meter}</td><td>{_fmt(_mean(col('precision')))}</td>"
-                         f"<td>{_fmt(_mean(col('recall')))}</td><td>{_fmt(_mean(col('fpr')), 5)}</td>"
-                         f"<td>{_pct(_mean(col('ulv_percent')))}</td><td>{_pct(_mean(col('dlv_percent')))}</td>"
+            parts.append(f"<tr><td>{rank}</td><td class='l'>{swatch(d)}{e(d)}</td><td>{_pct(_mean(col('ulv_percent')))}</td>"
+                         f"<td>{fmt_bytes(net) if net is not None else '–'}</td><td>{_fmt(f1)}{meter}</td>"
+                         f"<td>{_fmt(_mean(col('precision')))}</td><td>{_fmt(_mean(col('recall')))}</td>"
+                         f"<td>{_fmt(_mean(col('fpr')), 5)}</td><td>{_pct(_mean(col('dlv_percent')))}</td>"
                          f"<td>{detected} / {len(completed)}</td><td>{sum(v or 0 for v in col('runtime')):.1f} s</td></tr>")
-        parts.append("</table><p class='sub'>Means over the finished configurations. ULV %: share of the exfiltrated "
+        parts.append("</table><p class='sub'>Means over the finished configurations, ordered by ULV % (lower first), "
+                     "then F1. ULV %: share of the exfiltrated "
                      "file that left before the detector's alarm (DNSExfiltrator mode: decoded data chunks over the file "
                      "size the tool announced; replay mode: share of the raw tunnel uplink). DLV %: the same for the "
                      "downlink. Lower is better.</p></div>")

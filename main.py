@@ -949,6 +949,9 @@ DNSEXFIL_DEFAULTS = {
     'domains': [],
     'expansion_factor': None,  # None: derive from 'encoding'
 }
+# Sweep-only parameters that set real parameters. domain_count: the first N
+# domains of the sweep's ``domains`` pool (default: traffic.tunnel.tunneling_domains).
+VIRTUAL_SWEEP_PARAMETERS = ('domain_count',)
 
 
 def _check_dnsexfil_keys(where: str, keys) -> None:
@@ -1085,13 +1088,22 @@ def get_dnsexfiltrator_configs(cfg: dict):
     for sweep in sweeps:
         sweep_name = sweep.get('name', 'unnamed_sweep')
         parameter = sweep.get('parameter', '')
-        if parameter not in DNSEXFIL_DEFAULTS:
+        if parameter not in DNSEXFIL_DEFAULTS and parameter not in VIRTUAL_SWEEP_PARAMETERS:
             raise ValueError(
                 f"Unknown sweep parameter '{parameter}' in sweep '{sweep_name}'. "
-                f"Valid parameters: {sorted(DNSEXFIL_DEFAULTS)}"
+                f"Valid parameters: {sorted(DNSEXFIL_DEFAULTS) + list(VIRTUAL_SWEEP_PARAMETERS)}"
             )
+        pool = list(sweep.get('domains') or cfg_safe_get(cfg, ['traffic', 'tunnel', 'tunneling_domains'], []) or [])
         for value in sweep.get('values', []):
-            sweep_config = with_base(base_cfg, {parameter: value})
+            if parameter == 'domain_count':
+                if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= len(pool):
+                    raise ValueError(
+                        f"Sweep '{sweep_name}': domain_count {value!r} needs an integer between 1 and "
+                        f"{len(pool)} (the number of domains in its 'domains' pool)"
+                    )
+                sweep_config = with_base(base_cfg, {'domains': pool[:value]})
+            else:
+                sweep_config = with_base(base_cfg, {parameter: value})
             sweep_config['name'] = f"{sweep_name}_{parameter}_{value}"
             sweep_config['_group'] = sweep_name
             sweep_config['_kind'] = 'sweep'

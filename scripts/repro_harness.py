@@ -105,6 +105,23 @@ except ValueError:
 check("C2 profiles inherit baseline; params validated", ok_inherit and ok_validate,
       "profile p=%s; typo rejected=%s" % ({k: p[k] for k in ('domains', 'throttle', 'label_max_size', 'encoding')}, ok_validate))
 
+# S1: domain_count sweeps take the first N domains of the sweep's pool (default: tunneling_domains).
+_ds = {'traffic': {'tunnel': {'tunneling_domains': ['a.com', 'b.net', 'c.org']}},
+       'dnsexfiltrator': {'enabled': True, 'baseline': {'domains': ['a.com']},
+                          'sweeps': [{'name': 'dom', 'parameter': 'domain_count', 'values': [1, 3]},
+                                     {'name': 'pool', 'parameter': 'domain_count', 'values': [2], 'domains': ['c.org', 'b.net', 'a.com']}]}}
+_dc = {c['name']: c for c in main.get_dnsexfiltrator_configs(_ds)}
+try:
+    main.get_dnsexfiltrator_configs(dict(_ds, dnsexfiltrator=dict(_ds['dnsexfiltrator'], sweeps=[{'name': 'x', 'parameter': 'domain_count', 'values': [4]}])))
+    _dc_bad = False
+except ValueError:
+    _dc_bad = True
+check("S1 domain_count sweep uses the first N domains of its pool",
+      _dc['dom_domain_count_1']['domains'] == ['a.com'] and _dc['dom_domain_count_3']['domains'] == ['a.com', 'b.net', 'c.org']
+      and _dc['pool_domain_count_2']['domains'] == ['c.org', 'b.net'] and _dc['dom_domain_count_3']['_value'] == 3 and _dc_bad,
+      "dom_1=%s dom_3=%s pool_2=%s; count above the pool rejected=%s"
+      % (_dc['dom_domain_count_1']['domains'], _dc['dom_domain_count_3']['domains'], _dc['pool_domain_count_2']['domains'], _dc_bad))
+
 # G1: every configuration is tagged with its dashboard group (Baseline / sweep name / Profiles).
 _grp = {n: (c.get('_group'), c.get('_kind')) for n, c in cs.items()}
 check("G1 configs tagged with their group for the dashboard",

@@ -28,7 +28,7 @@ traffic:
     replay: false              # replay mode; ignored when dnsexfiltrator.enabled
     pcap: "tunneling.pcap"
     pps: 0
-    tunneling_domains: ["tunnel.com"]
+    tunneling_domains: ["tunnel.com", "exfil-sync.net", "cdn-telemetry.org", "update-check.info"]
     tunnel_server_ip: 192.168.4.4   # must be in 192.168.0.0/16
     expansion_factor: 1.6      # replay mode only
 
@@ -48,6 +48,10 @@ dnsexfiltrator:
     - name: "throttle_sweep"
       parameter: "throttle"
       values: [5, 10, 20]
+    - name: "domain_sweep"         # spread the transfer over more domains
+      parameter: "domain_count"    # uses the first N domains of 'domains'
+      values: [1, 2, 3, 4]
+      domains: ["tunnel.com", "exfil-sync.net", "cdn-telemetry.org", "update-check.info"]
   profiles:
     - name: "stealth"
       throttle: 20
