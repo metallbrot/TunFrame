@@ -105,6 +105,32 @@ except ValueError:
 check("C2 profiles inherit baseline; params validated", ok_inherit and ok_validate,
       "profile p=%s; typo rejected=%s" % ({k: p[k] for k in ('domains', 'throttle', 'label_max_size', 'encoding')}, ok_validate))
 
+# G1: every configuration is tagged with its dashboard group (Baseline / sweep name / Profiles).
+_grp = {n: (c.get('_group'), c.get('_kind')) for n, c in cs.items()}
+check("G1 configs tagged with their group for the dashboard",
+      _grp.get('baseline') == ('Baseline', 'baseline') and _grp.get('s_throttle_5') == ('s', 'sweep')
+      and _grp.get('p') == ('Profiles', 'profile'),
+      "groups=%s" % _grp)
+
+# B4: the client runs under a PTY (script) so mono line-buffers and keeps colour; the server does not.
+_calls = []
+class _FakeRun:
+    returncode = 0; stdout = ''; stderr = ''
+_orig_run = main.subprocess.run
+main.subprocess.run = lambda cmd, **kw: (_calls.append(cmd), _FakeRun())[1]
+try:
+    main.docker_exec_bg_logged('dnsexfiltrator-client', '/data/logs/client.log', 'mono', '/app/x.exe', 'a b', pty=True)
+    main.docker_exec_bg_logged('dnsexfiltrator-server', '/app/logs/server.log', 'python3', '-u', 'x.py')
+finally:
+    main.subprocess.run = _orig_run
+_pty, _plain = _calls[0], _calls[1]
+_ok_pty = ('-e' in _pty and 'TERM=xterm' in _pty and any(a.startswith('TUNFRAME_CMD=') for a in _pty)
+           and 'script -qec "$TUNFRAME_CMD" /dev/null' in _pty[-1] and 'tee -a /data/logs/client.log' in _pty[-1])
+_ok_plain = ('TERM=xterm' not in _plain and 'script' not in _plain[-1]
+             and 'python3 -u x.py 2>&1 | tee -a /app/logs/server.log' in _plain[-1])
+check("B4 client runs under a PTY wrapper, server runs directly", _ok_pty and _ok_plain,
+      "pty ok=%s, plain ok=%s" % (_ok_pty, _ok_plain))
+
 import tempfile as _tf, pathlib as _pl
 _old_dir = main.RESULTS_DIR
 main.RESULTS_DIR = _pl.Path(_tf.mkdtemp())
@@ -327,6 +353,17 @@ check("T2 transfer end drains the log up to that moment", _o2[1] == 3 and _o2[5]
       "processed %d lines (expected 3, 10 appended later ignored), stop_reason=%s after %.2fs" % (_o2[1], _o2[5]['stop_reason'], _el2))
 os.unlink(_tp)
 
+# ULV% / DLV%: leaked (plus allowlisted) tunnel payload over the window's whole tunnel payload.
+_u = [{'traffic_volume_up_bytes': 25, 'allowlisted_tunnel_up_bytes': 5, 'traffic_volume_down_bytes': 0},
+      {'traffic_volume_up_bytes': 500, 'traffic_volume_down_bytes': 10}]
+main.add_leak_shares(_u, {'tunnel_up_bytes': 100, 'tunnel_down_bytes': 0})
+check("U1 window counts tunnel payload; ULV%/DLV% relate leakage to it",
+      _o2[5]['tunnel_up_bytes'] == 6 and _o2[5]['tunnel_down_bytes'] == 0
+      and _u[0]['ulv_percent'] == 30.0 and _u[1]['ulv_percent'] == 100.0 and _u[0]['dlv_percent'] is None
+      and 'ulv_percent' in __import__('detection.reporting', fromlist=['SUMMARY_KEYS']).SUMMARY_KEYS,
+      "tunnel_up_bytes=%s (t0..t2: 6 B), ulv=%s, capped=%s, dlv without downlink=%s"
+      % (_o2[5]['tunnel_up_bytes'], _u[0]['ulv_percent'], _u[1]['ulv_percent'], _u[0]['dlv_percent']))
+
 with tempfile.NamedTemporaryFile('wb', suffix='.log', delete=False) as f:
     f.write(b"[+] File saved successfully\n"); _sl = f.name          # from an earlier configuration
 _we = threading.Event()
@@ -403,6 +440,12 @@ _q = sum(s['dns']['queries'] for s in _samples); _tq = sum(s['dns']['tunnel_quer
 check("O2 metrics count DNS traffic", _q == 6 and _tq == 2 and _samples[-1]['rcodes'].get('NXDOMAIN') == 1
       and _samples[-1]['top_domains'][0] == ['example.org', 4, False] and _samples[-1]['host']['cpu'] is not None,
       "queries=%d tunnel=%d rcodes=%s top=%s" % (_q, _tq, _samples[-1]['rcodes'], _samples[-1]['top_domains'][:2]))
+_dd = _smp._detail()
+check("O6 DNS details split benign and tunnel traffic",
+      _dd['qtypes'] == {'b': {'A': 4}, 't': {'A': 2}} and _dd['qname_len']['b'] == {'10': 4}
+      and sum(_dd['entropy']['t'].values()) == 2 and _dd['avg']['b']['query_bytes'] == 50.0
+      and any('dns_detail' in x for x in _samples),
+      "qtypes=%s qname_len=%s avg=%s" % (_dd['qtypes'], _dd['qname_len'], _dd['avg']['b']))
 
 _rc = main.RunControl(); _old_report = main.REPORT; main.REPORT = _mrep
 _mrep.set_phase('wartime', 'cfg1'); _rc.open_window()
@@ -434,8 +477,11 @@ _httpd.shutdown()
 check("O4 dashboard control needs token and local origin", _codes == (403, 403, 200) and json.load(open(_mrep.control_path))['id'] == 3 and 'tok123' in _page,
       "no token / foreign origin / valid -> %s" % (_codes,))
 _rc2 = _db.read_chunk(_pl.Path(_srv), 0, 30, align_lines=True)
-check("O5 dashboard never serves partial lines; progress bars collapse", _rc2['data'].endswith(b"\n") and _db.clean_tool_log("\x1b[1m[=] 10%\r[==] 20%\x1b[0m\ndone") == "[==] 20%\ndone",
-      "chunk ends at a line break, '\\r' progress collapses to its last state")
+check("O5 dashboard never serves partial lines; progress bars collapse; SGR colour kept, other escapes dropped",
+      _rc2['data'].endswith(b"\n")
+      and _db.clean_tool_log("\x1b[1m[=] 10%\r[==] 20%\x1b[0m\ndone") == "[==] 20%\x1b[0m\ndone"
+      and _db.clean_tool_log("\x1b[2K\x1b[31mred\x1b[0m") == "\x1b[31mred\x1b[0m",
+      "chunk ends at a line break, '\\r' progress collapses, colour codes survive, cursor/erase codes removed")
 
 # Per-run report directory, charts, report.html and dashboard API
 import pathlib as _pl2, datetime as _dt
@@ -460,8 +506,12 @@ check("R1 one directory per run", _rep.dir.parent == main.RESULTS_DIR and sorted
 check("R2 run.json tracks status per config", _state['status'] == 'completed' and [(c['name'], c['status']) for c in _state['configs']] == [('cfgA', 'completed'), ('cfgB', 'skipped')]
       and _state['configs'][0]['detectors'][0]['f1'] == 1.0, "status=%s configs=%s" % (_state['status'], [(c['name'], c['status']) for c in _state['configs']]))
 check("R3 run.log mirrors console without progress lines", 'RUN SUMMARY' in _log and 'progress line' not in _log, "run.log has %d lines" % _log.count('\n'))
-check("R4 report.html and charts written", (_rep.dir / 'report.html').exists() and (_rep.dir / 'charts' / 'f1_by_config.png').exists(),
-      "report.html=%s f1 chart=%s" % ((_rep.dir / 'report.html').exists(), (_rep.dir / 'charts' / 'f1_by_config.png').exists()))
+_charts = _rep.dir / 'charts'
+_r4 = {n: (_charts / n).exists() for n in ('bars_f1.png', 'bars_f1-dark.png', 'heatmap_f1.png', 'heatmap_f1-dark.png')}
+_html = (_rep.dir / 'report.html').read_text() if (_rep.dir / 'report.html').exists() else ''
+check("R4 report.html and charts written in light and dark", all(_r4.values()) and "tunframe-theme" in _html
+      and "bars_f1-dark.png" in _html and "Detector comparison" in _html,
+      "charts=%s, theme toggle and dark images in report.html=%s" % (_r4, "tunframe-theme" in _html))
 sys.path.insert(0, os.path.join(ROOT, 'scripts'))
 import dashboard
 _runs = dashboard.list_runs(main.RESULTS_DIR)

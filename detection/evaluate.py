@@ -5,7 +5,10 @@ import inspect
 import threading
 import logging
 from detection.detector_base.readfile import log_end_offset
-from detection.detector_base.feature_extraction import get_registered_domain, registered_domain_of, is_response, get_fqdn, validate_fqdn
+from detection.detector_base.feature_extraction import (
+    get_registered_domain, registered_domain_of, is_response, get_fqdn, validate_fqdn,
+    query_payload_bytes, answer_payload_bytes,
+)
 import json
 
 # Get the logger configured in main.py
@@ -178,7 +181,10 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
     
     logcount = 0
     tunnel_count = 0
-    counts = {"total_queries": 0, "total_responses": 0, "tunnel_queries": 0, "tunnel_responses": 0}
+    # tunnel_up_bytes / tunnel_down_bytes: the whole tunnel payload of the window,
+    # the denominator of a detector's ULV% / DLV% (share leaked before its alarm).
+    counts = {"total_queries": 0, "total_responses": 0, "tunnel_queries": 0, "tunnel_responses": 0,
+              "tunnel_up_bytes": 0, "tunnel_down_bytes": 0}
     
     # The caller clears wartime_stop_event before arming the phase timer;
     # clearing it here would swallow a stop that was already signalled.
@@ -236,6 +242,10 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
                 istunnel = True
                 tunnel_count += 1
                 counts["tunnel_responses" if response else "tunnel_queries"] += 1
+                if response:
+                    counts["tunnel_down_bytes"] += answer_payload_bytes(logline)
+                else:
+                    counts["tunnel_up_bytes"] += query_payload_bytes(logline)
                 logger.debug(f"[!] Tunneling seen...({domain})")
         
             for detector in detectors:

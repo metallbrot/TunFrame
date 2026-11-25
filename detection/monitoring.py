@@ -3,7 +3,10 @@
 ``MetricsSampler`` appends one JSON sample every ``interval`` seconds to the
 run's ``metrics.jsonl``: DNS rates from the collector log, response codes and
 top domains, the DNSExfiltrator transfer progress from the server log, and CPU
-and memory of this process and of the Docker containers.
+and memory of this process and of the Docker containers. Every few samples it
+adds ``dns_detail``: query and answer record types, transport protocol, query
+name length and subdomain entropy distributions and packet sizes, each split
+into benign and tunnel traffic.
 
 ``ControlWatcher`` reads ``control.json`` (written by the dashboard) and hands
 new requests to a callback.
@@ -21,7 +24,9 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from detection.detector_base.feature_extraction import get_fqdn, get_registered_domain, is_response
+from detection.detector_base.feature_extraction import (
+    extract_subdomain_string, get_fqdn, get_registered_domain, is_response, json_safe_get, shannon_entropy,
+)
 from detection.detector_base.readfile import log_end_offset, readjson
 
 _ANSI = re.compile(rb"\x1b\[[0-9;]*m")
@@ -112,6 +117,9 @@ class MetricsSampler:
     """
 
     TOP_DOMAINS = 8
+    DETAIL_EVERY = 5      # samples between two dns_detail blocks
+    LEN_BIN = 10          # query name length histogram bin (characters)
+    ENTROPY_BIN = 0.5     # subdomain entropy histogram bin (bits per character)
 
     def __init__(self, report, dns_log: Path, tunnel_domains, containers,
                  interval: float = 2.0, resource_interval: float = 6.0):
@@ -133,6 +141,11 @@ class MetricsSampler:
         self.rcodes = Counter()
         self.top = Counter()
         self.unique = set()
+        self._samples = 0
+        # dns_detail: every counter is split into benign ("b") and tunnel ("t").
+        self.detail = {k: {"b": Counter(), "t": Counter()} for k in
+                       ("qtypes", "answer_types", "protocols", "qname_len", "entropy")}
+        self.sizes = {"b": Counter(), "t": Counter()}   # q/r bytes and counts
 
     def start(self) -> "MetricsSampler":
         for thread in self._threads:
@@ -177,16 +190,32 @@ class MetricsSampler:
             return
         domain = get_registered_domain(event)
         tunnel = domain in self.tunnel_domains
+        side, d = ("t" if tunnel else "b"), self.detail
+        size = json_safe_get(event, "dns.length", 0) or 0
         if is_response(event):
             interval["r"] += 1
             interval["tr"] += tunnel
             self.rcodes[str((event.get("dns") or {}).get("rcode", "?"))] += 1
+            for rr in json_safe_get(event, "dns.resource-records.an", []) or []:
+                if isinstance(rr, dict):
+                    d["answer_types"][side][str(rr.get("rdatatype", "?")).upper()] += 1
+            self.sizes[side]["r_bytes"] += size
+            self.sizes[side]["r"] += 1
+            self.sizes[side]["answers"] += json_safe_get(event, "dns.ancount", 0) or 0
         else:
             interval["q"] += 1
             interval["tq"] += tunnel
             if domain:
                 self.top[domain] += 1
                 self.unique.add(domain)
+            d["qtypes"][side][str(json_safe_get(event, "dns.qtype", "?"))] += 1
+            d["protocols"][side][str(json_safe_get(event, "network.protocol", "?"))] += 1
+            d["qname_len"][side][min(len(get_fqdn(event)) // self.LEN_BIN * self.LEN_BIN, 250)] += 1
+            sub = extract_subdomain_string(event)
+            if sub:
+                d["entropy"][side][round(shannon_entropy(sub) // self.ENTROPY_BIN * self.ENTROPY_BIN, 2)] += 1
+            self.sizes[side]["q_bytes"] += size
+            self.sizes[side]["q"] += 1
 
     def _run(self) -> None:
         reader = readjson(str(self.dns_log), start_offset=log_end_offset(self.dns_log))
@@ -233,8 +262,26 @@ class MetricsSampler:
             "host": self._host(),
             "containers": containers,
         }
+        self._samples += 1
+        if self._samples % self.DETAIL_EVERY == 1:
+            sample["dns_detail"] = self._detail()
         with open(self.report.metrics_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(sample) + "\n")
+
+
+    def _detail(self) -> dict:
+        """Cumulative DNS details since the run started, benign vs. tunnel."""
+        detail = {k: {side: {str(b): n for b, n in c.items()} for side, c in v.items()}
+                  for k, v in self.detail.items()}
+        avg = {}
+        for side, c in self.sizes.items():
+            avg[side] = {
+                "query_bytes": round(c["q_bytes"] / c["q"], 1) if c["q"] else None,
+                "response_bytes": round(c["r_bytes"] / c["r"], 1) if c["r"] else None,
+                "answers_per_response": round(c["answers"] / c["r"], 2) if c["r"] else None,
+            }
+        detail["avg"] = avg
+        return detail
 
 
 class ControlWatcher:

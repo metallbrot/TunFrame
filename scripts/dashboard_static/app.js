@@ -2,13 +2,21 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const TOKEN = document.querySelector('meta[name="tunframe-token"]').content;
+const pct = v => `${v.toFixed(1)} %`, pct0 = v => `${v.toFixed(0)} %`;
+// fmt: tables and tooltips; cell: heatmap cells; axis: y axis. lower: lower is better.
+// ULV % / DLV %: share of the window's tunnel uplink / downlink payload that passed before
+// the detector's alarm, i.e. how much of the file was uploaded when the transfer completed.
 const METRICS = [
-  {key: "f1", label: "F1", max: 1, fmt: v => v.toFixed(3)},
-  {key: "precision", label: "Precision", max: 1, fmt: v => v.toFixed(3)},
-  {key: "recall", label: "Recall", max: 1, fmt: v => v.toFixed(3)},
-  {key: "fpr", label: "FPR", fmt: v => v.toPrecision(3)},
-  {key: "traffic_volume_up_bytes", label: "Leak up", fmt: TF.fmtBytes},
+  {key: "f1", label: "F1", max: 1, fmt: v => v.toFixed(3), cell: v => v.toFixed(2)},
+  {key: "precision", label: "Precision", max: 1, fmt: v => v.toFixed(3), cell: v => v.toFixed(2)},
+  {key: "recall", label: "Recall", max: 1, fmt: v => v.toFixed(3), cell: v => v.toFixed(2)},
+  {key: "fpr", label: "FPR", lower: true, fmt: v => v.toPrecision(3), cell: v => v ? v.toPrecision(2) : "0"},
+  {key: "ulv_percent", label: "ULV %", max: 100, lower: true, fmt: pct, cell: v => `${v.toFixed(0)}%`, axis: pct0},
+  {key: "dlv_percent", label: "DLV %", max: 100, lower: true, fmt: pct, cell: v => `${v.toFixed(0)}%`, axis: pct0},
+  {key: "traffic_volume_up_bytes", label: "Leak up", lower: true, fmt: TF.fmtBytes, cell: TF.fmtBytes, axis: TF.fmtBytes},
+  {key: "runtime", label: "Runtime", lower: true, fmt: v => `${v.toFixed(1)} s`, cell: v => `${v.toFixed(1)}s`},
 ];
+const axisFmt = m => m.axis || (m.max === 1 ? (v => v.toFixed(1)) : TF.fmtCompact);
 // Resource series keep their color across runs: color follows the entity.
 const RESOURCE_ENTITIES = ["main.py", "resolver", "root-simulator", "tld-simulator", "dnscollector",
                            "pcap-replayer", "dnsexfiltrator-server", "dnsexfiltrator-client"];
@@ -19,10 +27,11 @@ const STATUS_ICON = {completed: "✓", running: "●", skipped: "⊘", failed: "
 const HIDDEN_PARAMS = new Set(["password", "name"]);
 
 const state = {
-  runs: [], runId: null, run: null, skew: 0,
+  runs: [], runId: null, run: null, skew: 0, skewSet: false,
   metrics: {runId: null, offset: -1, samples: []},
   log: {tab: "run", runId: null, configKey: null, offsets: {run: -1, server: -1, client: -1}, text: {run: "", server: "", client: ""}},
-  metric: METRICS[0], showTable: false, lastControlId: null, timer: null,
+  metric: METRICS[0], heatMetric: METRICS[0], detector: null, sweep: null,
+  showTable: false, lastControlId: null, timer: null,
 };
 
 /* ---------- helpers ---------- */
@@ -43,6 +52,18 @@ function detectors(run) {
   return [...names].sort();
 }
 const detectorColor = name => TF.series(detectors(state.run).indexOf(name));
+// Group the configurations by their origin (Baseline, each parameter sweep, Profiles),
+// keeping the planned order. Falls back to one group when run.config_groups is absent.
+function configGroups(run) {
+  const meta = new Map((run.config_groups || []).map(g => [g.name, g]));
+  const order = [], byGroup = new Map();
+  for (const {name} of configRows(run)) {
+    const g = meta.get(name)?.group || "Configurations";
+    if (!byGroup.has(g)) { byGroup.set(g, []); order.push(g); }
+    byGroup.get(g).push(name);
+  }
+  return order.map(g => ({group: g, kind: meta.get(byGroup.get(g)[0])?.kind, names: byGroup.get(g)}));
+}
 function endedBy(entry) {
   const end = entry?.wartime_end;
   if (!end?.reason) return "–";
@@ -73,7 +94,9 @@ async function loadRuns() {
 
 async function loadRun() {
   const run = await getJSON(`/api/run/${encodeURIComponent(state.runId)}`);
-  state.skew = parseTime(run.server_time) - Date.now();
+  // Set the clock offset once: server_time has second resolution, so recomputing
+  // it every poll made the local clock jitter by up to a second.
+  if (!state.skewSet && run.server_time) { state.skew = parseTime(run.server_time) - Date.now(); state.skewSet = true; }
   if (run.control && run.control.id !== state.lastControlId) {
     if (state.lastControlId !== null) {
       toast(run.control.accepted ? `Run acknowledged: ${run.control.action.replace("_", " ")}` : `Run rejected: ${run.control.action}`);
@@ -229,17 +252,26 @@ function renderCurrent() {
          ${last ? `<div class="muted">Last configuration: ${TF.esc(last.name)} (${TF.esc(endedBy(last.entry))})</div>` : ""}`;
   }
   const dets = detectors(run), rows = configRows(run);
+  const byName = new Map(rows.map(r => [r.name, r]));
+  const groups = configGroups(run), cols = 4 + dets.length + 1;
   $("all-count").textContent = `(${rows.filter(r => r.entry).length} of ${rows.length} finished)`;
   const head = `<tr><th>Configuration</th><th class="l">Status</th><th class="l">Ended by</th><th>Tunnel q.</th>`
     + dets.map(d => `<th><span class="swatch" style="background:${detectorColor(d)}"></span>${TF.esc(d)}</th>`).join("") + `<th class="l"></th></tr>`;
-  $("config-table").innerHTML = head + rows.map(({name, status, entry}) => {
+  const rowHTML = ({name, status, entry}) => {
     const f1 = new Map((entry?.detectors || []).map(d => [d.detector, d.f1]));
     const reason = entry?.reason && status !== "completed" ? ` <span class="muted">${TF.esc(entry.reason)}</span>` : "";
     return `<tr class="${run.current?.name === name ? "is-current" : ""}"><td>${TF.esc(name)}</td><td class="l">${statusHTML(status)}${reason}</td>
       <td class="l">${TF.esc(endedBy(entry))}</td><td>${entry?.dataset_statistics?.tunnel_queries ?? "–"}</td>
       ${dets.map(d => `<td>${f1.get(d) != null ? f1.get(d).toFixed(3) : "–"}</td>`).join("")}
       <td class="l">${entry ? `<a href="/runs/${encodeURIComponent(state.runId)}/${TF.esc(entry.file)}" target="_blank" rel="noopener">json</a>` : ""}</td></tr>`;
+  };
+  const body = groups.map(g => {
+    const header = groups.length > 1
+      ? `<tr class="group-row"><td class="l" colspan="${cols}">${TF.esc(g.group)}${g.kind === "sweep" ? ' <span class="muted small">sweep</span>' : ""}</td></tr>`
+      : "";
+    return header + g.names.map(n => rowHTML(byName.get(n))).join("");
   }).join("");
+  $("config-table").innerHTML = head + body;
 }
 
 function sampleTime(s) { return parseTime(s.t); }
@@ -260,14 +292,6 @@ function renderTraffic() {
       return `${TF.fmtClock(new Date(x))} · ${s?.config || s?.phase || ""}`;
     },
   });
-  const current = state.run.current?.name;
-  const exfil = samples.filter(s => s.exfil && s.config === current);
-  $("exfil-config").textContent = current || "";
-  TF.line($("chart-exfil"), {
-    label: "Transfer progress", height: 180, yMax: 100, yFmt: v => `${Math.round(v)} %`,
-    emptyText: current ? "Waiting for the transfer to start…" : "No transfer running",
-    series: [{name: "Transferred", color: TF.series(0), points: exfil.map(s => ({x: sampleTime(s), y: s.exfil.percent}))}],
-  });
 }
 
 function renderResources() {
@@ -284,13 +308,31 @@ function renderResources() {
   TF.line($("chart-mem"), {label: "Memory per container", height: 180, emptyText: "Waiting for metrics…", series: build("mem"), alwaysLegend: true});
 }
 
+// Finished configurations in group order, with the group boundaries (null for one group).
+function finishedConfigs(run) {
+  const finished = new Map((run.configs || []).filter(c => (c.detectors || []).length).map(c => [c.name, c]));
+  const configs = [], sections = [];
+  for (const g of configGroups(run)) {
+    const start = configs.length;
+    for (const n of g.names) if (finished.has(n)) configs.push(finished.get(n));
+    if (configs.length > start) sections.push({label: g.group, start, count: configs.length - start});
+  }
+  return {configs, sections: sections.length > 1 ? sections : null};
+}
+const valueOf = (config, det, key) => config.detectors.find(x => x.detector === det)?.[key] ?? null;
+function meanOf(configs, det, key) {
+  const v = configs.map(c => valueOf(c, det, key)).filter(x => x != null);
+  return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+}
+const show = (v, fmt) => v == null ? "–" : fmt(v);
+
 function renderResults() {
   const run = state.run, m = state.metric, dets = detectors(run);
-  const configs = (run.configs || []).filter(c => (c.detectors || []).length);
-  $("results-title").textContent = `Detection results · ${m.label}`;
+  const {configs, sections: groupSections} = finishedConfigs(run);
+  $("results-title").textContent = `Detection results · ${m.label}${m.lower ? " (lower is better)" : ""}`;
   TF.bars($("chart-results"), {
-    label: `${m.label} by configuration`, yMax: m.max, yFmt: m.max ? (v => v.toFixed(1)) : (m.key.includes("bytes") ? TF.fmtBytes : TF.fmtCompact),
-    seriesNames: dets, colorOf: detectorColor,
+    label: `${m.label} by configuration`, yMax: m.max, yFmt: axisFmt(m),
+    seriesNames: dets, colorOf: detectorColor, sections: groupSections,
     groups: configs.map(c => ({name: c.name, values: Object.fromEntries(c.detectors.map(d => [d.detector, d[m.key]]))})),
   });
   $("results-table").innerHTML = `<table><tr><th>Configuration</th>${dets.map(d => `<th>${TF.esc(d)}</th>`).join("")}</tr>`
@@ -298,9 +340,162 @@ function renderResults() {
         const row = c.detectors.find(x => x.detector === d);
         return `<td>${row && row[m.key] != null ? TF.esc(m.fmt(Number(row[m.key]))) : "–"}</td>`;
       }).join("")}</tr>`).join("") + `</table>`;
-  const byConfig = new Map(configs.map(c => [c.name, new Map(c.detectors.map(d => [d.detector, d.f1]))]));
-  TF.heatmap($("chart-heat"), {label: "F1 by detector and configuration", rows: dets, cols: configs.map(c => c.name),
-    value: (r, c) => byConfig.get(c)?.get(r) ?? null});
+}
+
+function renderHeat() {
+  const run = state.run, m = state.heatMetric, dets = detectors(run);
+  const {configs, sections} = finishedConfigs(run);
+  const byName = new Map(configs.map(c => [c.name, c]));
+  const values = configs.flatMap(c => dets.map(d => valueOf(c, d, m.key))).filter(v => v != null);
+  $("heat-title").textContent = `Heatmap · ${m.label} by detector and configuration`;
+  TF.heatmap($("chart-heat"), {
+    label: `${m.label} by detector and configuration`, rows: dets, cols: configs.map(c => c.name), sections,
+    max: m.max ?? Math.max(0, ...values), fmt: m.cell, note: m.lower ? "lower is better" : "higher is better",
+    value: (r, c) => valueOf(byName.get(c), r, m.key),
+  });
+}
+
+function renderDetectors() {
+  const run = state.run, dets = detectors(run), {configs, sections} = finishedConfigs(run);
+  const view = $("detector-view");
+  if (!dets.length || !configs.length) {
+    $("leaderboard").innerHTML = '<tr><td class="muted">No finished configuration yet</td></tr>';
+    view.hidden = true;
+    return;
+  }
+  view.hidden = false;
+  const mean = (d, k) => meanOf(configs, d, k);
+  const ranked = [...dets].sort((a, b) => (mean(b, "f1") ?? -1) - (mean(a, "f1") ?? -1));
+  if (!dets.includes(state.detector)) state.detector = ranked[0];
+  const det = state.detector, sw = d => `<span class="swatch" style="background:${detectorColor(d)}"></span>`;
+  const detected = d => configs.filter(c => (valueOf(c, d, "tp") ?? 0) > 0).length;
+  $("leaderboard").innerHTML = `<tr><th>#</th><th class="l">Detector</th><th class="l">Mean F1</th><th>Precision</th><th>Recall</th>
+      <th>FPR</th><th>ULV %</th><th>DLV %</th><th>Detected</th><th>Runtime</th></tr>`
+    + ranked.map((d, i) => {
+      const f1 = mean(d, "f1");
+      return `<tr data-det="${TF.esc(d)}" class="${d === det ? "is-selected" : ""}" tabindex="0"><td>${i + 1}</td>
+        <td class="l">${sw(d)}${TF.esc(d)}</td>
+        <td class="l mono">${show(f1, v => v.toFixed(3))}<span class="mini-meter" aria-hidden="true"><i style="width:${100 * (f1 || 0)}%"></i></span></td>
+        <td>${show(mean(d, "precision"), v => v.toFixed(3))}</td><td>${show(mean(d, "recall"), v => v.toFixed(3))}</td>
+        <td>${show(mean(d, "fpr"), v => v.toPrecision(3))}</td><td>${show(mean(d, "ulv_percent"), pct)}</td>
+        <td>${show(mean(d, "dlv_percent"), pct)}</td><td>${detected(d)} / ${configs.length}</td>
+        <td>${configs.reduce((a, c) => a + (valueOf(c, d, "runtime") || 0), 0).toFixed(1)} s</td></tr>`;
+    }).join("");
+  $("det-buttons").innerHTML = dets.map(d => `<button data-det="${TF.esc(d)}" aria-pressed="${d === det}">${sw(d)}${TF.esc(d)}</button>`).join("");
+  $("det-name").innerHTML = `${sw(det)}${TF.esc(det)}`;
+  const kpi = (label, value) => `<div class="mini-kpi"><div class="kpi-label">${label}</div><div class="kpi-value mono">${value}</div></div>`;
+  $("det-kpis").innerHTML = kpi("Mean F1", show(mean(det, "f1"), v => v.toFixed(3)))
+    + kpi("Mean recall", show(mean(det, "recall"), v => v.toFixed(3)))
+    + kpi("Mean FPR", show(mean(det, "fpr"), v => v.toPrecision(3)))
+    + kpi("Mean ULV %", show(mean(det, "ulv_percent"), pct))
+    + kpi("Detected", `${detected(det)} / ${configs.length}`)
+    + kpi("Time per line", show(mean(det, "avg_process_time_ms"), v => `${v.toPrecision(2)} ms`));
+  const PRF = ["Precision", "Recall", "F1"], LEAK = ["ULV %", "DLV %"];
+  TF.bars($("chart-det-prf"), {
+    label: `Precision, recall and F1 of ${det}`, yMax: 1, yFmt: v => v.toFixed(1), seriesNames: PRF, sections,
+    colorOf: n => TF.series(PRF.indexOf(n)),
+    groups: configs.map(c => ({name: c.name, values: {Precision: valueOf(c, det, "precision"), Recall: valueOf(c, det, "recall"), F1: valueOf(c, det, "f1")}})),
+  });
+  TF.bars($("chart-det-leak"), {
+    label: `Leaked share of ${det}`, yMax: 100, yFmt: pct0, seriesNames: LEAK, sections,
+    colorOf: n => TF.series(LEAK.indexOf(n)),
+    groups: configs.map(c => ({name: c.name, values: {"ULV %": valueOf(c, det, "ulv_percent"), "DLV %": valueOf(c, det, "dlv_percent")}})),
+  });
+  const cols = ["precision", "recall", "f1", "fpr", "ulv_percent", "dlv_percent", "tp", "fp", "fn", "tn", "traffic_volume_up_bytes", "runtime"];
+  const fmts = {precision: v => v.toFixed(3), recall: v => v.toFixed(3), f1: v => v.toFixed(3), fpr: v => v.toPrecision(3),
+                ulv_percent: pct, dlv_percent: pct, traffic_volume_up_bytes: TF.fmtBytes, runtime: v => `${v.toFixed(1)} s`};
+  const groupOf = new Map((run.config_groups || []).map(g => [g.name, g.group]));
+  let last = null;
+  $("det-table").innerHTML = `<tr><th>Configuration</th><th>Precision</th><th>Recall</th><th>F1</th><th>FPR</th><th>ULV %</th><th>DLV %</th>
+      <th>TP</th><th>FP</th><th>FN</th><th>TN</th><th>Leak up</th><th>Runtime</th></tr>`
+    + configs.map(c => {
+      const g = groupOf.get(c.name), head = sections && g !== last ? `<tr class="group-row"><td class="l" colspan="13">${TF.esc(g || "")}</td></tr>` : "";
+      last = g;
+      return head + `<tr><td>${TF.esc(c.name)}</td>${cols.map(k => `<td>${show(valueOf(c, det, k), fmts[k] || String)}</td>`).join("")}</tr>`;
+    }).join("");
+}
+
+function renderTradeoff() {
+  const run = state.run, {configs} = finishedConfigs(run);
+  TF.scatter($("chart-tradeoff"), {
+    label: "Recall over false positive rate", yMax: 1, height: 260, xName: "FPR", yName: "Recall",
+    xFmt: v => v === 0 ? "0" : v.toPrecision(2), yFmt: v => v.toFixed(1),
+    xLabel: "False positive rate (lower is better)", yLabel: "Recall",
+    series: detectors(run).map(d => ({name: d, color: detectorColor(d),
+      points: configs.map(c => ({x: valueOf(c, d, "fpr"), y: valueOf(c, d, "recall"), label: c.name})).filter(p => p.x != null && p.y != null)})),
+  });
+}
+
+// Sweeps of the run: [{name, parameter, items: [{config, value}]}] in planned order.
+function sweepsOf(run) {
+  const sweeps = new Map();
+  for (const g of run.config_groups || []) {
+    if (g.kind !== "sweep" || !g.parameter) continue;
+    if (!sweeps.has(g.group)) sweeps.set(g.group, {name: g.group, parameter: g.parameter, items: []});
+    sweeps.get(g.group).items.push({config: g.name, value: g.value});
+  }
+  return [...sweeps.values()];
+}
+
+function renderSweeps() {
+  const run = state.run, m = state.metric, sweeps = sweepsOf(run);
+  if (!sweeps.length) {
+    $("sweep-buttons").innerHTML = ""; $("sweep-title").textContent = "Sweeps";
+    return TF.empty($("chart-sweep"), "This run has no parameter sweep");
+  }
+  if (!sweeps.some(sw => sw.name === state.sweep)) state.sweep = sweeps[0].name;
+  const sweep = sweeps.find(sw => sw.name === state.sweep);
+  $("sweep-buttons").innerHTML = sweeps.length > 1
+    ? sweeps.map(sw => `<button data-sweep="${TF.esc(sw.name)}" aria-pressed="${sw.name === sweep.name}">${TF.esc(sw.name)}</button>`).join("") : "";
+  $("sweep-title").textContent = `Sweep ${sweep.name} · ${m.label} over ${sweep.parameter}`;
+  const byName = new Map((run.configs || []).filter(c => (c.detectors || []).length).map(c => [c.name, c]));
+  const numeric = sweep.items.every(it => typeof it.value === "number");
+  const xOf = (it, i) => numeric ? it.value : i;
+  const labels = sweep.items.map(it => String(it.value));
+  TF.line($("chart-sweep"), {
+    label: `${m.label} over ${sweep.parameter}`, height: 240, dots: true, alwaysLegend: false,
+    yMax: m.max, yFmt: axisFmt(m), emptyText: "No finished configuration of this sweep yet",
+    xFmt: x => numeric ? TF.fmtCompact(x) : (labels[Math.round(x)] ?? ""),
+    xTickValues: sweep.items.length <= 12 ? sweep.items.map(xOf) : null,
+    headFor: x => `${sweep.parameter} = ${numeric ? x : labels[Math.round(x)]}`,
+    series: detectors(run).map(d => ({name: d, color: detectorColor(d),
+      points: sweep.items.map((it, i) => ({x: xOf(it, i), y: byName.has(it.config) ? valueOf(byName.get(it.config), d, m.key) : null}))
+        .filter(p => p.y != null)})),
+  });
+}
+
+function shareBars(el, block, {numeric = false, binLabel = k => k, top = 8} = {}) {
+  const b = block?.b || {}, t = block?.t || {};
+  const sum = o => Object.values(o).reduce((a, v) => a + v, 0), tb = sum(b), tt = sum(t);
+  let keys = [...new Set([...Object.keys(b), ...Object.keys(t)])];
+  keys = numeric ? keys.sort((x, y) => +x - +y)
+    : keys.sort((x, y) => ((b[y] || 0) / (tb || 1) + (t[y] || 0) / (tt || 1)) - ((b[x] || 0) / (tb || 1) + (t[x] || 0) / (tt || 1))).slice(0, top);
+  const SIDES = ["Benign", "Tunnel"];
+  TF.bars(el, {
+    label: "Share within benign and tunnel traffic", seriesNames: SIDES, colorOf: n => TF.series(SIDES.indexOf(n)),
+    yFmt: pct0, plotHeight: 140, emptyText: "Waiting for DNS details…",
+    groups: keys.map(k => ({name: binLabel(k), values: {Benign: tb ? 100 * (b[k] || 0) / tb : null, Tunnel: tt ? 100 * (t[k] || 0) / tt : null}})),
+  });
+}
+
+function renderRecords() {
+  const detail = [...state.metrics.samples].reverse().find(s => s.dns_detail)?.dns_detail;
+  shareBars($("chart-qtypes"), detail?.qtypes);
+  shareBars($("chart-atypes"), detail?.answer_types);
+  shareBars($("chart-qlen"), detail?.qname_len, {numeric: true, binLabel: k => `${k}–${+k + 9}`});
+  shareBars($("chart-entropy"), detail?.entropy, {numeric: true, binLabel: k => `${(+k).toFixed(1)}–${(+k + 0.5).toFixed(1)}`});
+  if (!detail) { $("dns-avg").innerHTML = '<tr><td class="muted">Waiting for DNS details…</td></tr>'; return; }
+  const total = side => Object.values(detail.qtypes?.[side] || {}).reduce((a, v) => a + v, 0);
+  const udp = side => { const p = detail.protocols?.[side] || {}, n = Object.values(p).reduce((a, v) => a + v, 0); return n ? 100 * (p.UDP || 0) / n : null; };
+  const avg = (side, k) => detail.avg?.[side]?.[k] ?? null;
+  const row = (label, f) => `<tr><td>${label}</td><td>${f("b")}</td><td>${f("t")}</td></tr>`;
+  $("dns-avg").innerHTML = `<tr><th>Measure</th><th><span class="swatch" style="background:${TF.series(0)}"></span>Benign</th>
+      <th><span class="swatch" style="background:${TF.series(1)}"></span>Tunnel</th></tr>`
+    + row("Queries", s => TF.fmtCompact(total(s)))
+    + row("Query size", s => show(avg(s, "query_bytes"), v => `${v.toFixed(0)} B`))
+    + row("Response size", s => show(avg(s, "response_bytes"), v => `${v.toFixed(0)} B`))
+    + row("Answers per response", s => show(avg(s, "answers_per_response"), v => v.toFixed(2)))
+    + row("UDP share", s => show(udp(s), pct));
 }
 
 function renderBreakdown() {
@@ -311,23 +506,28 @@ function renderBreakdown() {
 }
 
 function renderLog() {
-  const el = $("log"), text = state.log.text[state.log.tab];
-  if (el.textContent !== text) {
-    el.textContent = text || (state.log.tab === "run" ? "No log lines yet." : "No output from this tool for the running configuration yet.");
-    if ($("follow").checked) el.scrollTop = el.scrollHeight;
-  }
+  const el = $("log");
+  const raw = state.log.text[state.log.tab]
+    || (state.log.tab === "run" ? "No log lines yet." : "No output from this tool for the running configuration yet.");
+  if (el.dataset.raw === raw) return;
+  el.dataset.raw = raw;
+  el.innerHTML = TF.ansiToHtml(raw);  // render the tools' ANSI colours
+  if ($("follow").checked) el.scrollTop = el.scrollHeight;
 }
 
 function renderAll() {
   if (!state.run) return;
   renderTop(); renderKPIs(); renderTimes(); renderCurrent();
   renderTraffic(); renderResources(); renderResults(); renderBreakdown();
+  renderHeat(); renderDetectors(); renderTradeoff(); renderSweeps(); renderRecords();
 }
 
 function renderEmpty() {
   $("k-status").textContent = "No runs";
   $("current").innerHTML = '<div class="muted">Start an experiment with <code>python3 main.py</code>.</div>';
-  for (const id of ["chart-dns", "chart-exfil", "chart-cpu", "chart-mem", "chart-results", "chart-heat"]) TF.empty($(id), "No data yet");
+  for (const id of ["chart-dns", "chart-cpu", "chart-mem", "chart-results", "chart-heat", "chart-tradeoff", "chart-sweep",
+                    "chart-qtypes", "chart-atypes", "chart-qlen", "chart-entropy"]) TF.empty($(id), "No data yet");
+  $("detector-view").hidden = true;
 }
 
 /* ---------- loop and controls ---------- */
@@ -360,17 +560,36 @@ $("btn-skip").addEventListener("click", () => control("skip_config",
   "Skip the running configuration?\nIts window is evaluated up to now and saved as interrupted; the run continues with the next configuration."));
 $("btn-stop").addEventListener("click", () => control("stop_run",
   "Stop the run?\nThe running window is evaluated up to now, remaining configurations are skipped, and the report is written."));
-$("metric-buttons").innerHTML = METRICS.map((m, i) => `<button data-i="${i}" aria-pressed="${i === 0}">${m.label}</button>`).join("");
-$("metric-buttons").addEventListener("click", ev => {
+function metricButtons(id, key, render) {
+  $(id).innerHTML = METRICS.map((m, i) => `<button data-i="${i}" aria-pressed="${i === 0}">${m.label}</button>`).join("");
+  $(id).addEventListener("click", ev => {
+    const b = ev.target.closest("button"); if (!b) return;
+    state[key] = METRICS[+b.dataset.i];
+    $(id).querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x === b));
+    if (state.run) render();
+  });
+}
+metricButtons("metric-buttons", "metric", () => { renderResults(); renderSweeps(); });
+metricButtons("heat-buttons", "heatMetric", renderHeat);
+function selectDetector(ev) {
+  const el = ev.target.closest("[data-det]"); if (!el) return;
+  state.detector = el.dataset.det;
+  if (state.run) renderDetectors();
+}
+$("det-buttons").addEventListener("click", selectDetector);
+$("leaderboard").addEventListener("click", selectDetector);
+$("leaderboard").addEventListener("keydown", ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); selectDetector(ev); } });
+$("sweep-buttons").addEventListener("click", ev => {
   const b = ev.target.closest("button"); if (!b) return;
-  state.metric = METRICS[+b.dataset.i];
-  $("metric-buttons").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x === b));
-  if (state.run) renderResults();
+  state.sweep = b.dataset.sweep;
+  if (state.run) renderSweeps();
 });
 $("table-toggle").addEventListener("click", () => {
   state.showTable = !state.showTable;
   $("table-toggle").setAttribute("aria-pressed", state.showTable);
+  $("table-toggle").textContent = state.showTable ? "Chart" : "Table";
   $("results-table").hidden = !state.showTable;
+  $("chart-results").hidden = state.showTable;  // the chart's labels overlapped the table
 });
 $("log-tabs").addEventListener("click", ev => {
   const b = ev.target.closest("button"); if (!b) return;

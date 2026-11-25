@@ -250,12 +250,14 @@ The dashboard listens on `127.0.0.1` only and lists every run directory, so earl
 
 - **Key figures:** status and phase, running time, estimated end (from the average duration of finished configurations, plus the latest possible end), configuration `i / n`, DNSExfiltrator transfer progress, DNS queries per second and the tunnel share.
 - **Current configuration** with its parameters and window progress; all configurations (status, how each window ended, F1 per detector) in an expandable box.
-- **Charts:** DNS queries per second (all vs. tunnel) over the run with configuration boundaries, transfer progress of the running configuration, CPU and memory per container and of `main.py`, detection results per configuration (F1, precision, recall, FPR, leakage; table view), and an F1 heatmap of detector × configuration.
-- **DNS breakdown:** response codes and the most queried registered domains (tunnel domains marked).
+- **Charts:** DNS queries per second (all vs. tunnel) over the run with configuration boundaries, CPU and memory per container and of `main.py`, detection results per configuration for any metric (F1, precision, recall, FPR, ULV %, DLV %, leakage, runtime; table view), and a detector × configuration heatmap with its own metric selector. Configurations are grouped by origin (baseline, each sweep, profiles).
+- **Detectors:** a comparison of all detectors (means over the finished configurations); selecting one shows its key figures, precision/recall/F1 and leaked share per configuration, and its full per-configuration table.
+- **Detection trade-off and sweeps:** recall over FPR (one point per detector and configuration) and the selected metric over each sweep's parameter values.
+- **DNS breakdown and records:** response codes, the most queried registered domains (tunnel domains marked), and, benign vs. tunnel, the shares of query types, answer record types, query name lengths and subdomain entropy, plus average query and response sizes.
 - **Logs:** the run log and the DNSExfiltrator server and client output of the running configuration.
 - **Controls:** *Skip configuration* evaluates the running window up to now, saves it as `interrupted` and continues with the next one; *Stop run* does the same and skips all remaining configurations. Both ask for confirmation. Requests carry a token embedded in the page and are only accepted from the dashboard's own origin; the run picks them up from `control.json` in its directory.
 
-The metrics come from `metrics.jsonl`, which `main.py` writes into the run directory every two seconds (DNS rates from the collector log, transfer progress from the server log, `docker stats`).
+The metrics come from `metrics.jsonl`, which `main.py` writes into the run directory every two seconds (DNS rates and record details from the collector log, transfer progress from the server log, `docker stats`).
 
 Rebuild the charts and `report.html` of a run directory:
 
@@ -279,10 +281,10 @@ Every run gets its own directory in `output.logdir`, named `<global.name>_<YYYYm
 results/<name>_<timestamp>/
 ├── run.json              # run state, updated live: phase, progress, status and detector summary per configuration
 ├── run.log               # console log of the run
-├── metrics.jsonl         # live metrics every 2 s: DNS rates, response codes, top domains, transfer progress, CPU/memory
+├── metrics.jsonl         # live metrics every 2 s: DNS rates, response codes, top domains, record types, transfer progress, CPU/memory
 ├── control.json          # requests from the dashboard (skip configuration, stop run), if any
 ├── configs/<config>.json # full results of one wartime window (one per DNSExfiltrator configuration)
-├── charts/*.png          # F1, FPR and uplink leakage per configuration; F1 over each sweep
+├── charts/*.png          # bars and heatmaps per metric (incl. ULV %), recall vs. FPR, sweeps; light + -dark
 └── report.html           # static report with the charts and the tables behind them
 ```
 
@@ -296,4 +298,4 @@ Each file in `configs/` contains:
 - `metadata.run_info`: git commit and dirty flag, Python, library and Docker versions.
 - `metadata.complete_config`: the full `config.yaml`.
 - `metadata.dataset_statistics`: line, query and response counts of the window.
-- `detectors`: per-detector metrics. Confusion-matrix classes are domain-level over the registered domains seen in the window (TN excludes FN). Leakage volume (`traffic_volume_up_bytes`, `traffic_volume_down_bytes`) counts the query payload and the answer RDATA of tunneling traffic until the detector's first alarm; allowlisted tunneling traffic is reported separately (`allowlisted_tunnel_*`).
+- `detectors`: per-detector metrics. Confusion-matrix classes are domain-level over the registered domains seen in the window (TN excludes FN). Leakage volume (`traffic_volume_up_bytes`, `traffic_volume_down_bytes`) counts the query payload and the answer RDATA of tunneling traffic until the detector's first alarm; allowlisted tunneling traffic is reported separately (`allowlisted_tunnel_*`). `ulv_percent` / `dlv_percent` relate that leakage (plus allowlisted tunnel traffic) to the whole tunnel payload of the window (`dataset_statistics.tunnel_up_bytes` / `tunnel_down_bytes`): the share of the file that left before the alarm when the transfer completed.

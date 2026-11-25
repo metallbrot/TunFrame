@@ -40,7 +40,10 @@ STATIC_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=
                 ".js": "text/javascript; charset=utf-8"}
 RUN_FILE_TYPES = {".html": "text/html; charset=utf-8", ".json": "application/json",
                   ".png": "image/png", ".log": "text/plain; charset=utf-8"}
-_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+# Keep SGR colour codes (CSI ending in "m") so the browser can render them; drop the
+# other CSI control sequences (cursor moves, erase) a PTY inserts, which end in any
+# other letter. The client runs under ``script``, so these appear in its log.
+_OTHER_ESC = re.compile(r"\x1b\[[0-9;?]*[A-Za-ln-z]")
 
 
 def default_results_dir() -> Path:
@@ -109,8 +112,8 @@ def read_chunk(path: Path, offset: int, limit: int, align_lines: bool = False) -
 
 
 def clean_tool_log(text: str) -> str:
-    """Strip colors and collapse carriage-return progress bars to their last state."""
-    text = _ANSI.sub("", text)
+    """Keep SGR colours, drop other escapes, collapse \\r progress bars to their last state."""
+    text = _OTHER_ESC.sub("", text)
     return "\n".join(line.rstrip("\r").split("\r")[-1] for line in text.split("\n"))
 
 

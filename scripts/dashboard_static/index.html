@@ -46,15 +46,11 @@
     <div class="chart" id="chart-dns"></div>
   </section>
 
-  <section class="card span-4" aria-labelledby="h-exfil">
-    <h2 id="h-exfil">Transfer progress <span class="muted small" id="exfil-config"></span></h2>
-    <div class="chart" id="chart-exfil"></div>
-  </section>
-  <section class="card span-4" aria-labelledby="h-cpu">
+  <section class="card span-6" aria-labelledby="h-cpu">
     <h2 id="h-cpu">CPU <span class="muted small">% of one core</span></h2>
     <div class="chart" id="chart-cpu"></div>
   </section>
-  <section class="card span-4" aria-labelledby="h-mem">
+  <section class="card span-6" aria-labelledby="h-mem">
     <h2 id="h-mem">Memory <span class="muted small">MB</span></h2>
     <div class="chart" id="chart-mem"></div>
   </section>
@@ -68,7 +64,7 @@
   </section>
 
   <section class="card span-4" aria-labelledby="h-dnsdetail">
-    <h2 id="h-dnsdetail">DNS breakdown</h2>
+    <h2 id="h-dnsdetail">DNS breakdown <span class="muted small">since run start</span></h2>
     <h3>Response codes</h3>
     <div id="rcodes"></div>
     <h3>Top queried domains</h3>
@@ -76,8 +72,47 @@
   </section>
 
   <section class="card span-12" aria-labelledby="h-heat">
-    <h2 id="h-heat">F1 by detector and configuration</h2>
+    <h2 id="h-heat"><span id="heat-title">Heatmap</span><span class="spacer"></span>
+      <span role="group" aria-label="Heatmap metric" id="heat-buttons" class="seg"></span></h2>
     <div class="chart" id="chart-heat"></div>
+  </section>
+
+  <section class="card span-12" aria-labelledby="h-detectors">
+    <h2 id="h-detectors">Detectors <span class="muted small">means over the finished configurations · select a detector</span></h2>
+    <div class="table-wrap"><table id="leaderboard" class="clickable"></table></div>
+    <div id="detector-view" class="detector-view">
+      <div class="det-head"><span id="det-name" class="cur-name"></span>
+        <span role="group" aria-label="Detector" id="det-buttons" class="seg"></span></div>
+      <div class="mini-kpis" id="det-kpis"></div>
+      <div class="subgrid">
+        <div><h3>Precision, recall and F1 by configuration</h3><div class="chart" id="chart-det-prf"></div></div>
+        <div><h3>Leaked share before the alarm <span class="muted small">lower is better</span></h3><div class="chart" id="chart-det-leak"></div></div>
+      </div>
+      <h3>Per configuration</h3>
+      <div class="table-wrap"><table id="det-table"></table></div>
+    </div>
+  </section>
+
+  <section class="card span-6" aria-labelledby="h-tradeoff">
+    <h2 id="h-tradeoff">Detection trade-off <span class="muted small">recall over FPR · one point per configuration</span></h2>
+    <div class="chart" id="chart-tradeoff"></div>
+  </section>
+  <section class="card span-6" aria-labelledby="h-sweeps">
+    <h2 id="h-sweeps"><span id="sweep-title">Sweeps</span><span class="spacer"></span>
+      <span role="group" aria-label="Sweep" id="sweep-buttons" class="seg"></span></h2>
+    <div class="chart" id="chart-sweep"></div>
+  </section>
+
+  <section class="card span-12" aria-labelledby="h-records">
+    <h2 id="h-records">DNS records <span class="muted small">share within benign and within tunnel traffic · since run start</span></h2>
+    <div class="subgrid subgrid-4">
+      <div><h3>Query types</h3><div class="chart" id="chart-qtypes"></div></div>
+      <div><h3>Answer record types</h3><div class="chart" id="chart-atypes"></div></div>
+      <div><h3>Query name length <span class="muted small">characters</span></h3><div class="chart" id="chart-qlen"></div></div>
+      <div><h3>Subdomain entropy <span class="muted small">bits per character</span></h3><div class="chart" id="chart-entropy"></div></div>
+    </div>
+    <h3>Averages</h3>
+    <div class="table-wrap"><table id="dns-avg"></table></div>
   </section>
 
   <section class="card span-12" aria-labelledby="h-logs">

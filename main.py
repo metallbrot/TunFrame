@@ -140,7 +140,8 @@ def docker_exec(container: str, *docker_cmd: str, check: bool = True):
     subprocess.run(cmd, check=check)
 
 
-def docker_exec_bg_logged(container: str, logfile: str, *tool_cmd: str, check: bool = False):
+def docker_exec_bg_logged(container: str, logfile: str, *tool_cmd: str, check: bool = False,
+                          pty: bool = False):
     """Start a tool detached in ``container`` with its output made visible again.
 
     The dnsexfiltrator containers run ``sleep infinity`` as their main process, so
@@ -154,14 +155,26 @@ def docker_exec_bg_logged(container: str, logfile: str, *tool_cmd: str, check: b
 
     ``sh`` on both images is dash, so the POSIX pipe form is used rather than bash
     process substitution.
+
+    With ``pty=True`` the tool runs under ``script`` on a pseudo-terminal. The
+    mono client block-buffers stdout and drops its colours when its output is a
+    plain pipe; a PTY makes it line-buffer and emit ANSI colours, so the log
+    streams live and in colour (``TERM=xterm`` is passed for the colour support).
+    The command is passed through the ``TUNFRAME_CMD`` environment variable so no
+    quoting of it leaks into the ``script -c`` string.
     """
     inner = " ".join(shlex.quote(a) for a in tool_cmd)
     log_dir = str(PurePosixPath(logfile).parent)
+    # The PTY path passes the command via an env var so that ``script -c`` (which
+    # re-parses it through ``sh -c``) sees the quoting intact; the direct path
+    # keeps the command inline so dash parses the quoting itself.
+    run = 'script -qec "$TUNFRAME_CMD" /dev/null' if pty else inner
     wrapped = (
         f"mkdir -p {shlex.quote(log_dir)}; "
-        f"{inner} 2>&1 | tee -a {shlex.quote(logfile)} > /proc/1/fd/1"
+        f"{run} 2>&1 | tee -a {shlex.quote(logfile)} > /proc/1/fd/1"
     )
-    cmd = ["docker", "exec", "-d", container, "sh", "-c", wrapped]
+    env = ["-e", f"TUNFRAME_CMD={inner}", "-e", "TERM=xterm"] if pty else []
+    cmd = ["docker", "exec", "-d", *env, container, "sh", "-c", wrapped]
     return subprocess.run(cmd, capture_output=True, text=True, check=check)
 
 
@@ -556,6 +569,24 @@ def wartime_end_info(counts: dict, watcher: "TransferWatcher" = None) -> dict:
     }
 
 
+def add_leak_shares(results: list, counts: dict) -> None:
+    """Add ULV% and DLV% to every detector result.
+
+    ``ulv_percent`` is the share of the window's tunnel uplink payload (query
+    names) that passed before the detector's alarm; when the transfer completed
+    it is the share of the exfiltrated file that left before detection.
+    ``dlv_percent`` is the same for the downlink (answer records). Allowlisted
+    tunnel traffic never raises an alarm, so it counts as leaked. ``None`` when
+    the window carried no tunnel payload in that direction.
+    """
+    up, down = counts.get("tunnel_up_bytes", 0), counts.get("tunnel_down_bytes", 0)
+    for result in results or []:
+        lv_up = (result.get("traffic_volume_up_bytes") or 0) + (result.get("allowlisted_tunnel_up_bytes") or 0)
+        lv_down = (result.get("traffic_volume_down_bytes") or 0) + (result.get("allowlisted_tunnel_down_bytes") or 0)
+        result["ulv_percent"] = min(100.0, 100.0 * lv_up / up) if up else None
+        result["dlv_percent"] = min(100.0, 100.0 * lv_down / down) if down else None
+
+
 def build_and_save_metadata(
     results_file: Path,
     results: list,
@@ -587,6 +618,7 @@ def build_and_save_metadata(
     responses are counted separately in ``counts``.
     """
     counts = counts or {}
+    add_leak_shares(results, counts)
     total_queries = counts.get("total_queries", 0)
     tunnel_queries = counts.get("tunnel_queries", 0)
     tunnel_percentage = (tunnel_queries / total_queries * 100) if total_queries > 0 else 0
@@ -638,6 +670,8 @@ def build_and_save_metadata(
             "tunnel_queries": tunnel_queries,
             "tunnel_responses": counts.get("tunnel_responses", 0),
             "tunnel_percentage": tunnel_percentage,
+            "tunnel_up_bytes": counts.get("tunnel_up_bytes", 0),
+            "tunnel_down_bytes": counts.get("tunnel_down_bytes", 0),
             "unique_domains": len(alldomains),
             "logfile": str(LOGFILE)
         },
@@ -992,7 +1026,7 @@ def get_dnsexfiltrator_configs(cfg: dict):
     base_cfg.pop('name', None)
     if baseline_cfg:
         logger.info("[+] Processing baseline configuration")
-        configs.append(with_base(base_cfg, {'name': 'baseline'}))
+        configs.append(with_base(base_cfg, {'name': 'baseline', '_group': 'Baseline', '_kind': 'baseline'}))
 
     # 2. Sweeps (inherit the filled baseline)
     sweeps = cfg_safe_get(cfg, ['dnsexfiltrator', 'sweeps'], []) or []
@@ -1007,6 +1041,10 @@ def get_dnsexfiltrator_configs(cfg: dict):
         for value in sweep.get('values', []):
             sweep_config = with_base(base_cfg, {parameter: value})
             sweep_config['name'] = f"{sweep_name}_{parameter}_{value}"
+            sweep_config['_group'] = sweep_name
+            sweep_config['_kind'] = 'sweep'
+            sweep_config['_parameter'] = parameter
+            sweep_config['_value'] = value
             configs.append(sweep_config)
             logger.info(f"[+] Added sweep config: {sweep_config['name']} ({parameter}={value})")
 
@@ -1017,12 +1055,14 @@ def get_dnsexfiltrator_configs(cfg: dict):
         _check_dnsexfil_keys(f"profile '{profile_name}'", profile)
         filled_profile = with_base(base_cfg, profile)
         filled_profile['name'] = profile_name
+        filled_profile['_group'] = 'Profiles'
+        filled_profile['_kind'] = 'profile'
         configs.append(filled_profile)
         logger.info(f"[+] Added profile: {profile_name}")
 
     # If no configurations were found, run the baseline values once
     if not configs:
-        configs.append(with_base(base_cfg, {'name': 'default'}))
+        configs.append(with_base(base_cfg, {'name': 'default', '_group': 'Baseline', '_kind': 'baseline'}))
         logger.info("[+] Created default configuration")
 
     logger.info(f"[+] Total DNSExfiltrator configurations: {len(configs)}")
@@ -1072,6 +1112,11 @@ def run_setup(cfg: dict):
     dnsexfil_configs = get_dnsexfiltrator_configs(cfg)
     validate_dnsexfil_domains(dnsexfil_configs, tunneling_domains)
     report.set_planned_configs([c['name'] for c in dnsexfil_configs] or ["wartime"])
+    report.update(config_groups=[
+        {"name": c['name'], "group": c.get('_group', 'Baseline'), "kind": c.get('_kind', 'baseline'),
+         "parameter": c.get('_parameter'), "value": c.get('_value')}
+        for c in dnsexfil_configs
+    ])
     report.update(timing={"wartime_duration": wartime_duration, "peacetime_duration": peacetime_duration})
     
     # Calculate total estimated duration
@@ -1555,7 +1600,8 @@ def run_wartime_phase(
             set_phase("wartime", config_name)
             REPORT.update(current={"name": config_name, "index": config_idx + 1, "total": len(dnsexfil_configs),
                                    "started": datetime.now().isoformat(timespec="seconds"), "window_started": None,
-                                   "parameters": {k: v for k, v in config.items() if k != 'name'}})
+                                   "parameters": {k: v for k, v in config.items()
+                                                  if k != 'name' and not k.startswith('_')}})
             
             # Use config domains as tunneling domains for this run
             config_tunneling_domains_set = {ground_truth_domain(d) for d in domains} if domains else tunneling_domains_set
@@ -1709,7 +1755,7 @@ def run_wartime_phase(
             
 
             result = docker_exec_bg_logged(
-                "dnsexfiltrator-client", "/data/logs/client.log", *cmd,
+                "dnsexfiltrator-client", "/data/logs/client.log", *cmd, pty=True,
             )
             if result.returncode != 0:
                 logger.error(f"[!] Failed to start client: {result.stderr}")
