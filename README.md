@@ -91,7 +91,7 @@ A run has these steps:
    - **Replay mode** (`traffic.tunnel.replay: true`): a tunnel pcap is replayed.
    - **DNSExfiltrator mode** (`dnsexfiltrator.enabled: true`): the DNSExfiltrator containers run one configuration after another (baseline, sweeps, profiles). Detectors are reset at every configuration boundary; allowlists are kept.
 
-   A wartime window ends when its timer expires or when every detector has flagged every tunneling domain.
+   A wartime window ends when its timer expires, when every detector has flagged every tunneling domain, or (DNSExfiltrator mode, `dnsexfiltrator.stop_on_transfer_complete`) once the server has saved the exfiltrated file. In the last case the detectors first catch up with the log as it was at that moment, so every query of the transfer is evaluated. Windows ended this way differ in length; TN and FPR refer to each window. The results record how each window ended (`metadata.wartime_end`).
 4. **Evaluation.** Each detector reports domain-level metrics for the window, and one results file is written per window (per configuration in DNSExfiltrator mode) into the run's directory. At the end of the run the console shows a summary table, and charts plus `report.html` are written.
 
 Each replay is started once per run and never restarted, so wartime sees the part of a capture that follows the peacetime slice. The collector log is never truncated while the collector runs; each phase reads from the byte offset where it started.
@@ -190,6 +190,7 @@ Renamed keys abort the run with a hint (`timing.duration` → `timing.wartime_du
 | Parameter | Type | Required | Description | Default |
 |---|---|---|---|---|
 | `dnsexfiltrator.enabled` | bool | No | Generate live tunnel traffic with DNSExfiltrator | `false` |
+| `dnsexfiltrator.stop_on_transfer_complete` | bool | No | End a wartime window once the server reports the file as saved (`timing.wartime_duration` stays the upper bound) | `true` |
 | `dnsexfiltrator.baseline` | mapping | No | Baseline configuration (named `baseline`) | defaults below |
 | `dnsexfiltrator.sweeps` | list | No | `{name, parameter, values}`: one configuration per value, based on the baseline | `[]` |
 | `dnsexfiltrator.profiles` | list | No | Named configurations; unset values come from the baseline | `[]` |
@@ -277,6 +278,7 @@ A run that fails or is interrupted after setup still gets `run.json` with status
 Each file in `configs/` contains:
 
 - `metadata.run_status`: `completed`, `interrupted`, `skipped` or `failed`, with a reason. Skipped and failed configurations also get a file.
+- `metadata.wartime_end`: how the window ended (`reason`: `transfer_complete`, `all_detected`, `timer`, `log_ended` or `interrupted`) and, in DNSExfiltrator mode, whether and after how many seconds the transfer completed.
 - `metadata.dnsexfiltrator_config`: the exact configuration of the window (DNSExfiltrator mode).
 - `metadata.run_info`: git commit and dirty flag, Python, library and Docker versions.
 - `metadata.complete_config`: the full `config.yaml`.

@@ -20,7 +20,7 @@ warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from detection.evaluate import load_detectors, run_peacetime, run_wartime, generate_allowlists, save_results, load_global_allowlist, wartime_stop_event, peacetime_stop_event, peacetime_done, cfg_safe_get, format_duration
+from detection.evaluate import load_detectors, run_peacetime, run_wartime, generate_allowlists, save_results, load_global_allowlist, wartime_stop_event, transfer_complete_event, peacetime_stop_event, peacetime_done, cfg_safe_get, format_duration
 from detection.detector_base.readfile import readjson, log_end_offset
 from detection.detector_base.feature_extraction import normalize_domain, get_registered_domain, registered_domain_of
 from config.dns_config_generator import generate_all_configs
@@ -36,6 +36,8 @@ RESULTS_DIR = PROJECT_ROOT / "results"
 REPORT = None  # RunReport of the current run, created in run_setup
 DETECTOR_PATH = PROJECT_ROOT / "detection" / "detectors"
 LOGFILE = DOCKER_PATH / "dns-collector" / "logs" / "dnslogs.json"
+# DNSExfiltrator server output, appended across configurations (see docker_exec_bg_logged).
+SERVER_LOG = DOCKER_PATH / "dnsexfiltrator-server" / "volume" / "logs" / "server.log"
 
 class UnifiedOutputHandler(logging.Handler):
     def __init__(self):
@@ -444,6 +446,84 @@ class PhaseTimer:
         self._timer.cancel()
 
 
+class TransferWatcher:
+    """Signal the end of a DNSExfiltrator transfer from the server log.
+
+    The server prints ``TRANSFER_DONE_MARKER`` after it has written the
+    received file. The watcher reads the server log from ``start_offset`` (the
+    log is appended across configurations), and when the marker appears waits
+    ``settle_seconds`` for the DNS collector to write the last queries and
+    responses, then sets ``event``. Like ``PhaseTimer`` it must be cancelled
+    when the window ends.
+
+    Args:
+        server_log: Server log on the host (bind-mounted from the container).
+        start_offset: Byte offset of the log before this configuration's server started.
+        event: Event to set once the transfer is complete.
+        settle_seconds: Delay between the marker and setting ``event``.
+        poll_interval: Seconds between reads of the server log.
+    """
+
+    TRANSFER_DONE_MARKER = "File saved successfully"
+
+    def __init__(self, server_log: Path, start_offset: int, event: threading.Event,
+                 settle_seconds: float = 2.0, poll_interval: float = 0.5):
+        self._log = Path(server_log)
+        self._offset = start_offset
+        self._event = event
+        self._settle = settle_seconds
+        self._poll = poll_interval
+        self._cancelled = threading.Event()
+        self._started_at = None
+        self.completed_after = None  # seconds from start() to the marker
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> "TransferWatcher":
+        """Start watching and return self."""
+        self._started_at = time.monotonic()
+        self._thread.start()
+        return self
+
+    def cancel(self) -> None:
+        """Stop watching; a no-op once the event has been set."""
+        self._cancelled.set()
+
+    def _run(self) -> None:
+        pending = b""
+        while not self._cancelled.is_set():
+            try:
+                with open(self._log, "rb") as f:
+                    f.seek(self._offset)
+                    chunk = f.read()
+            except OSError:
+                chunk = b""
+            if chunk:
+                self._offset += len(chunk)
+                pending += chunk
+                *lines, pending = pending.split(b"\n")
+                if any(self.TRANSFER_DONE_MARKER.encode() in line for line in lines):
+                    self.completed_after = time.monotonic() - self._started_at
+                    logger.info(f"[+] Transfer complete after {self.completed_after:.1f}s "
+                                f"(server saved the file); ending the window once the log is caught up")
+                    if not self._cancelled.wait(self._settle):
+                        self._event.set()
+                    return
+            self._cancelled.wait(self._poll)
+
+
+def wartime_end_info(counts: dict, watcher: "TransferWatcher" = None) -> dict:
+    """Describe how a wartime window ended, for the results metadata.
+
+    ``transfer_completed`` and ``transfer_seconds`` are ``None`` when no
+    transfer was watched (replay mode or ``stop_on_transfer_complete: false``).
+    """
+    return {
+        "reason": counts.get("stop_reason"),
+        "transfer_completed": (watcher.completed_after is not None) if watcher else None,
+        "transfer_seconds": round(watcher.completed_after, 3) if watcher and watcher.completed_after is not None else None,
+    }
+
+
 def build_and_save_metadata(
     results_file: Path,
     results: list,
@@ -467,6 +547,7 @@ def build_and_save_metadata(
     status_reason: str = "",
     dnsexfil_config: dict = None,
     config_name: str = "wartime",
+    wartime_end: dict = None,
 ):
     """Build metadata, save the results file and record it in the run report.
 
@@ -536,12 +617,13 @@ def build_and_save_metadata(
         "dnsexfiltrator_config": dnsexfil_config,
         "run_info": get_run_info(),
         "run_status": {"status": status, "reason": status_reason},
+        "wartime_end": wartime_end,
     }
     save_results(str(results_file), results, metadata)
     get_report(cfg).record_config(
         config_name, status, status_reason, results_file, results=results,
         dataset_statistics=metadata["dataset_statistics"], dnsexfil_config=dnsexfil_config,
-        started=start_timestamp, finished=end_timestamp,
+        started=start_timestamp, finished=end_timestamp, wartime_end=wartime_end,
     )
 
 
@@ -1026,7 +1108,16 @@ def _short_list(items, limit: int = 5) -> str:
     return shown + (f" (+{len(items) - limit} more)" if len(items) > limit else "")
 
 
-def show_results(results, config_name=None, peacetime_logcount=0, wartime_duration=None):
+STOP_REASON_LABELS = {
+    "transfer_complete": "ended: transfer complete",
+    "all_detected": "ended: all tunnels detected",
+    "timer": "ended: timer",
+    "log_ended": "ended: log ended",
+    "interrupted": "ended: interrupted",
+}
+
+
+def show_results(results, config_name=None, peacetime_logcount=0, wartime_duration=None, stop_reason=None):
     """Log a compact results table for one wartime window.
 
     Full per-detector results (alarm lists, leakage, timing) are in the
@@ -1043,6 +1134,8 @@ def show_results(results, config_name=None, peacetime_logcount=0, wartime_durati
         details.append(f"peacetime lines: {peacetime_logcount}")
     if wartime_duration:
         details.append(f"wartime: {format_duration(wartime_duration)}")
+    if stop_reason:
+        details.append(STOP_REASON_LABELS.get(stop_reason, f"ended: {stop_reason}"))
     banner(title + (f"  ({', '.join(details)})" if details else ""), width=96)
 
     logger.info(f"{'Detector':<18} {'Prec':>6} {'Recall':>6} {'F1':>6} {'FPR':>8} "
@@ -1120,6 +1213,7 @@ def run_wartime_phase(
     tunneling_pcap = cfg_safe_get(cfg, ["traffic", "tunnel", "pcap"], "")
     tunneling_pps = cfg_safe_get(cfg, ["traffic", "tunnel", "pps"])
     dnsexfil_enabled = cfg_safe_get(cfg, ['dnsexfiltrator', 'enabled'], False)
+    stop_on_transfer = bool(cfg_safe_get(cfg, ['dnsexfiltrator', 'stop_on_transfer_complete'], True))
 
     all_results = results_sink if results_sink is not None else []
 
@@ -1300,6 +1394,8 @@ def run_wartime_phase(
                                    dnsexfil_config=skipped)
         else:
             logger.info(f"[+] Running {len(dnsexfil_configs)} DNSExfiltrator configurations sequentially")
+            logger.info("[+] Windows end early once the file has arrived" if stop_on_transfer
+                        else "[+] Windows run their full duration (stop_on_transfer_complete: false)")
             
             # Prepare directories
             server_volume_dir = PROJECT_ROOT / "docker/dnsexfiltrator-server/volume"
@@ -1362,6 +1458,7 @@ def run_wartime_phase(
             # Record where this configuration starts in the log BEFORE starting
             # DNSExfiltrator; the log is never truncated while the collector runs.
             config_offset = log_end_offset(LOGFILE)
+            server_log_offset = log_end_offset(SERVER_LOG)
             
             # Reset state for this configuration - create fresh log generator
             config_start_timestamp = datetime.now()
@@ -1419,6 +1516,11 @@ def run_wartime_phase(
             # exfiltration instead of following it.
             wartime_stop_event.clear()
             war_timer = PhaseTimer(wartime_stop_event, wartime_duration).start()
+            transfer_complete_event.clear()
+            transfer_watcher = (
+                TransferWatcher(SERVER_LOG, server_log_offset, transfer_complete_event).start()
+                if stop_on_transfer else None
+            )
             start_background_replays()
 
             logger.info(f"[+] Starting DNSExfiltrator client: {filepath}")
@@ -1565,6 +1667,8 @@ def run_wartime_phase(
                     logger.error("[!] DNSExfiltrator client is not running and produced no tunnel traffic!")
                     logger.error(f"[!] Skipping configuration: {config_name}")
                     war_timer.cancel()
+                    if transfer_watcher:
+                        transfer_watcher.cancel()
                     managed_replay_stop_all()
                     save_status_result(cfg, config_name, "skipped", "DNSExfiltrator client produced no tunnel traffic", dnsexfil_config=config)
                     continue
@@ -1577,6 +1681,8 @@ def run_wartime_phase(
             if not check_process_running("dnsexfiltrator-server", "dnsExfiltrator.py"):
                 logger.error(f"[!] DNSExfiltrator server is not running! Skipping config: {config_name}")
                 war_timer.cancel()
+                if transfer_watcher:
+                    transfer_watcher.cancel()
                 managed_replay_stop_all()
                 save_status_result(cfg, config_name, "skipped", "DNSExfiltrator server stopped before wartime", dnsexfil_config=config)
                 continue
@@ -1596,9 +1702,12 @@ def run_wartime_phase(
                 results, logcount, tunnel_count, seen_tunnels, config_alldomains, counts = run_wartime(
                     active_detectors, config_log_generator, config_tunneling_domains_set, global_allowlist,
                     expansion_factor=config_expansion_factor(config),
+                    transfer_event=transfer_complete_event if stop_on_transfer else None,
                 )
             finally:
                 war_timer.cancel()
+                if transfer_watcher:
+                    transfer_watcher.cancel()
                 # Stop this window's background replay so the next config starts
                 # it again from the same segment packet.
                 managed_replay_stop_all()
@@ -1615,7 +1724,8 @@ def run_wartime_phase(
             all_seen_domains.update(config_alldomains)
             
             # Show results for this configuration
-            show_results(results, config_name=config_name, wartime_duration=wartime_duration)
+            show_results(results, config_name=config_name, wartime_duration=wartime_duration,
+                         stop_reason=counts.get("stop_reason"))
             
             # Build metadata and save results for this configuration
             config_end_timestamp = datetime.now()
@@ -1643,6 +1753,7 @@ def run_wartime_phase(
                 counts=counts,
                 dnsexfil_config=dict(config, expansion_factor_used=config_expansion_factor(config)),
                 config_name=config_name,
+                wartime_end=wartime_end_info(counts, transfer_watcher),
                 status="interrupted" if counts.get("interrupted") else "completed",
                 status_reason="Ctrl+C during wartime; partial window" if counts.get("interrupted") else ""
             )
@@ -1707,7 +1818,7 @@ def run_wartime_phase(
         })
         
         # Show results
-        show_results(results, wartime_duration=wartime_duration)
+        show_results(results, wartime_duration=wartime_duration, stop_reason=counts.get("stop_reason"))
         
         # Build metadata and save results
         build_and_save_metadata(
@@ -1729,6 +1840,7 @@ def run_wartime_phase(
             public_resolver=public_resolver,
             cfg=cfg,
             counts=counts,
+            wartime_end=wartime_end_info(counts),
             status="interrupted" if counts.get("interrupted") else "completed",
             status_reason="Ctrl+C during wartime; partial window" if counts.get("interrupted") else ""
         )

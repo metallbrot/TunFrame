@@ -140,7 +140,7 @@ class RunReport:
 
     def record_config(self, config_name: str, status: str, reason: str, file: Path,
                       results=None, dataset_statistics=None, dnsexfil_config=None,
-                      started=None, finished=None) -> None:
+                      started=None, finished=None, wartime_end=None) -> None:
         """Add or replace the run.json entry of one configuration."""
         entry = {
             "name": config_name,
@@ -151,6 +151,7 @@ class RunReport:
             "finished": (finished or datetime.now()).isoformat(timespec="seconds"),
             "dataset_statistics": dataset_statistics,
             "dnsexfiltrator_config": dnsexfil_config,
+            "wartime_end": wartime_end,
             "detectors": summarize_detectors(results),
         }
         with self._lock:

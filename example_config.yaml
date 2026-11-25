@@ -34,6 +34,7 @@ traffic:
 
 dnsexfiltrator:
   enabled: false
+  stop_on_transfer_complete: true   # end a window once the server has saved the file
   baseline:
     file: "/data/synthetic_cc_data_100.csv"
     password: "tunframe"

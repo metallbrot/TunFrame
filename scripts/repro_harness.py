@@ -303,6 +303,57 @@ check("D5 peacetime skips events without qname", d5, "event without qname skippe
 check("D3 broken aggregator module removed", not os.path.exists(os.path.join(ROOT, "detection", "detector_base", "aggregator.py")),
       "detection/detector_base/aggregator.py removed (it had no importers)")
 
+# Early end of a wartime window once the exfiltrated file has arrived
+with tempfile.NamedTemporaryFile('wb', suffix='.json', delete=False) as f:
+    _lines = [(json.dumps(evt('t%d.tunnel.com' % i)) + "\n").encode() for i in range(3)]
+    f.write(b"".join(_lines)); _tp = f.name
+_r = readjson(_tp); _ends, _pos = [], 0
+for _ln in _lines:
+    _pos += len(_ln); next(_r); _ends.append(_r.offset == _pos)
+check("T1 reader reports its log offset", all(_ends), "offset after each line matches the line end: %s" % _ends)
+
+class Appender(Detector):
+    """Appends lines to the log while the window drains, like ongoing benign traffic."""
+    def detect(self, logline):
+        if not getattr(self, 'done', False):
+            self.done = True
+            with open(_tp, 'ab') as fa:
+                for i in range(10): fa.write((json.dumps(evt('late%d.org' % i)) + "\n").encode())
+ev.wartime_stop_event.clear(); _te = threading.Event(); _te.set()
+_t2 = main.PhaseTimer(ev.wartime_stop_event, 5).start(); _s = time.time()
+_o2 = ev.run_wartime([Appender()], readjson(_tp), {'tunnel.com'}, set(), transfer_event=_te)
+_t2.cancel(); _el2 = time.time() - _s
+check("T2 transfer end drains the log up to that moment", _o2[1] == 3 and _o2[5]['stop_reason'] == 'transfer_complete' and _el2 < 1.0,
+      "processed %d lines (expected 3, 10 appended later ignored), stop_reason=%s after %.2fs" % (_o2[1], _o2[5]['stop_reason'], _el2))
+os.unlink(_tp)
+
+with tempfile.NamedTemporaryFile('wb', suffix='.log', delete=False) as f:
+    f.write(b"[+] File saved successfully\n"); _sl = f.name          # from an earlier configuration
+_we = threading.Event()
+_w = main.TransferWatcher(_sl, os.path.getsize(_sl), _we, settle_seconds=0.1, poll_interval=0.05).start()
+time.sleep(0.3); _early = _we.is_set()
+with open(_sl, 'ab') as f: f.write(b"[+] All data received!\n[+] File saved succ")
+time.sleep(0.3); _partial = _we.is_set()
+with open(_sl, 'ab') as f: f.write(b"essfully\n")
+_fired = _we.wait(2); _w.cancel()
+check("T3 watcher signals only this configuration's transfer", not _early and not _partial and _fired and _w.completed_after is not None,
+      "old marker ignored=%s, partial line ignored=%s, fired=%s after %.2fs" % (not _early, not _partial, _fired, _w.completed_after or -1))
+os.unlink(_sl)
+
+with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
+    _idle = f.name
+ev.wartime_stop_event.clear(); _t4 = main.PhaseTimer(ev.wartime_stop_event, 0.2).start()
+_o4 = ev.run_wartime([Never()], readjson(_idle), {'tunnel.com'}, set()); _t4.cancel()
+ev.wartime_stop_event.clear()
+_o4b = ev.run_wartime([FlagTunnel()], gen([evt('a.tunnel.com')] + [evt('x.org')] * 3), {'tunnel.com'}, set())
+check("T4 other stop reasons unchanged", _o4[5]['stop_reason'] == 'timer' and _o4b[5]['stop_reason'] == 'all_detected',
+      "idle window: %s, all detected: %s" % (_o4[5]['stop_reason'], _o4b[5]['stop_reason']))
+os.unlink(_idle)
+_war = open(os.path.join(ROOT, "main.py")).read()
+check("T5 stop_on_transfer_complete switches the watcher", "['dnsexfiltrator', 'stop_on_transfer_complete'], True)" in _war
+      and "if stop_on_transfer else None" in _war and "transfer_event=transfer_complete_event if stop_on_transfer else None" in _war,
+      "watcher and transfer_event only when dnsexfiltrator.stop_on_transfer_complete is true (default)")
+
 # Per-run report directory, charts, report.html and dashboard API
 import pathlib as _pl2, datetime as _dt
 _old_dir = main.RESULTS_DIR

@@ -4,6 +4,7 @@ import importlib
 import inspect
 import threading
 import logging
+from detection.detector_base.readfile import log_end_offset
 from detection.detector_base.feature_extraction import get_registered_domain, registered_domain_of, is_response, get_fqdn, validate_fqdn
 import json
 
@@ -142,7 +143,7 @@ def _run_peacetime(detectors: list, log_generator, tunneling_domains: set) -> tu
 
 
 def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_allowlist: set,
-                expansion_factor: float = 1.0) -> tuple:
+                expansion_factor: float = 1.0, transfer_event: threading.Event = None) -> tuple:
     """Run one wartime window and evaluate all detectors on it.
 
     The domain universe used for TN and FPR contains only the registered
@@ -156,6 +157,10 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
         global_allowlist: Global allowlist (reported per detector).
         expansion_factor: Encoding expansion factor of the tunnel traffic in
             this window, used to estimate the real uplink data volume.
+        transfer_event: Set when the exfiltrated file has arrived. The window
+            then keeps reading until it has caught up with the log as it was at
+            that moment (or the log is idle), and ends with stop reason
+            ``transfer_complete``. ``None`` disables this.
 
     Returns:
         tuple: (results, logcount, tunnel_count, seen_tunnels, alldomains, counts).
@@ -163,7 +168,9 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
         responses). ``alldomains`` is the set of registered domains seen in
         this window. ``counts`` splits lines into ``total_queries``,
         ``total_responses``, ``tunnel_queries`` and ``tunnel_responses``, plus
-        ``interrupted`` (True if Ctrl+C ended the window early).
+        ``interrupted`` (True if Ctrl+C ended the window early) and
+        ``stop_reason``: ``transfer_complete``, ``all_detected``, ``timer``,
+        ``log_ended`` or ``interrupted``.
     """
     alldomains = set()
     tunneling_domains_seen = {domain: False for domain in tunneling_domains}
@@ -175,16 +182,31 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
     # The caller clears wartime_stop_event before arming the phase timer;
     # clearing it here would swallow a stop that was already signalled.
     interrupted = False
+    stop_reason = None
+    drain_target = None
     try:
         while not wartime_stop_event.is_set():
+            if transfer_event is not None and transfer_event.is_set():
+                if drain_target is None:
+                    path = getattr(log_generator, "path", None)
+                    drain_target = log_end_offset(path) if path else 0
+                    logger.info("[+] Transfer complete - finishing the window after catching up with the log")
+                if getattr(log_generator, "offset", drain_target) >= drain_target:
+                    stop_reason = "transfer_complete"
+                    break
             try:
                 logline = next(log_generator)
             except StopIteration:
                 logger.warning(f"\n⚠ Log ended after {logcount} lines")
+                stop_reason = "log_ended"
                 break
 
-            # Idle poll: the reader yields None so the stop event is re-checked.
+            # Idle poll: the reader yields None so the stop events are re-checked.
+            # Idle after the transfer finished means the log has been caught up.
             if logline is None:
+                if drain_target is not None:
+                    stop_reason = "transfer_complete"
+                    break
                 continue
             if get_fqdn(logline) is None:
                 continue
@@ -227,6 +249,7 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
 
             if done:
                 logger.info("[+] All tunneling domains detected. Stopping Wartime...")
+                stop_reason = "all_detected"
                 wartime_stop_event.set()
     
     except KeyboardInterrupt:
@@ -235,6 +258,7 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
         interrupted = True
         logger.warning("\n[!] Interrupted: evaluating the partial wartime window")
     counts["interrupted"] = interrupted
+    counts["stop_reason"] = "interrupted" if interrupted else (stop_reason or "timer")
     
     seen_tunnels = set([domain for domain, seen in tunneling_domains_seen.items() if seen])
     
@@ -288,6 +312,8 @@ def format_duration(seconds: float) -> str:
 
 # Phase stop events shared with main.py (set by PhaseTimer or by early stop).
 wartime_stop_event = threading.Event()
+# Set when the exfiltrated file has arrived at the server (see main.TransferWatcher).
+transfer_complete_event = threading.Event()
 peacetime_stop_event = threading.Event()
 peacetime_done = threading.Event()
 

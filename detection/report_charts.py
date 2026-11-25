@@ -202,6 +202,18 @@ dt { color:var(--ink-2); }
 """
 
 
+ENDED_BY = {"transfer_complete": "transfer complete", "all_detected": "all detected", "timer": "timer",
+            "log_ended": "log ended", "interrupted": "interrupted"}
+
+
+def _ended_by(config: dict) -> str:
+    end = config.get("wartime_end") or {}
+    if not end.get("reason"):
+        return ""
+    label = ENDED_BY.get(end["reason"], end["reason"])
+    return f"{label} ({end['transfer_seconds']:.1f} s)" if end.get("transfer_seconds") is not None else label
+
+
 def _status(status: str) -> str:
     icon = {"completed": "✓", "skipped": "⊘", "failed": "✕", "interrupted": "■"}.get(status, "•")
     return f'<span class="status-{html.escape(status)}">{icon} {html.escape(status)}</span>'
@@ -228,11 +240,11 @@ def render_html(run_dir: Path, state: dict, charts: list) -> Path:
 
     configs = state.get("configs", [])
     parts.append("<h2>Configurations</h2><div class='card'><table><tr><th>Configuration</th>"
-                 "<th class='l'>Status</th><th class='l'>Reason</th><th>Log lines</th><th>Tunnel queries</th><th class='l'>File</th></tr>")
+                 "<th class='l'>Status</th><th class='l'>Reason</th><th class='l'>Ended by</th><th>Log lines</th><th>Tunnel queries</th><th class='l'>File</th></tr>")
     for c in configs:
         stats = c.get("dataset_statistics") or {}
         parts.append(f"<tr><td>{e(c['name'])}</td><td class='l'>{_status(c['status'])}</td>"
-                     f"<td class='l'>{e(c.get('reason') or '')}</td><td>{stats.get('total_loglines', '')}</td>"
+                     f"<td class='l'>{e(c.get('reason') or '')}</td><td class='l'>{e(_ended_by(c))}</td><td>{stats.get('total_loglines', '')}</td>"
                      f"<td>{stats.get('tunnel_queries', '')}</td><td class='l'><a href='{e(c['file'])}'>{e(c['file'])}</a></td></tr>")
     parts.append("</table></div>")
 

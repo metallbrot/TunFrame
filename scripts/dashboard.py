@@ -289,6 +289,13 @@ function detectors(run) {
   return [...names].sort();
 }
 const color = i => i < 8 ? `var(--s${i + 1})` : "var(--muted)";
+const ENDED_BY = {transfer_complete:"transfer complete", all_detected:"all detected", timer:"timer", log_ended:"log ended", interrupted:"interrupted"};
+function endedBy(entry) {
+  const end = entry?.wartime_end;
+  if (!end?.reason) return "–";
+  const label = ENDED_BY[end.reason] ?? end.reason;
+  return end.transfer_seconds != null ? `${label} (${end.transfer_seconds.toFixed(1)} s)` : label;
+}
 
 async function loadRuns() {
   state.runs = await getJSON("/api/runs");
@@ -339,7 +346,7 @@ function configRows(r) {
 
 function renderConfigs() {
   const r = state.run, dets = detectors(r);
-  const head = `<tr><th>Configuration</th><th class="l">Status</th><th>Log lines</th><th>Tunnel queries</th>`
+  const head = `<tr><th>Configuration</th><th class="l">Status</th><th class="l">Ended by</th><th>Log lines</th><th>Tunnel queries</th>`
     + dets.map((d, i) => `<th><span class="swatch" style="background:${color(i)}"></span>${esc(d)} F1</th>`).join("") + `<th class="l">Details</th></tr>`;
   const rows = configRows(r).map(({name, status, entry}) => {
     const stats = entry?.dataset_statistics || {};
@@ -347,7 +354,7 @@ function renderConfigs() {
     const cells = dets.map(d => `<td>${f1.has(d) && f1.get(d) != null ? f1.get(d).toFixed(3) : "–"}</td>`).join("");
     const link = entry ? `<a href="/runs/${encodeURIComponent(state.runId)}/${esc(entry.file)}" target="_blank" rel="noopener">json</a>` : "";
     const reason = entry?.reason && status !== "completed" ? ` <span class="muted">${esc(entry.reason)}</span>` : "";
-    return `<tr><td>${esc(name)}</td><td class="l">${statusLabel(status)}${reason}</td><td>${stats.total_loglines ?? "–"}</td>`
+    return `<tr><td>${esc(name)}</td><td class="l">${statusLabel(status)}${reason}</td><td class="l">${esc(endedBy(entry))}</td><td>${stats.total_loglines ?? "–"}</td>`
       + `<td>${stats.tunnel_queries ?? "–"}</td>${cells}<td class="l">${link}</td></tr>`;
   }).join("");
   $("config-table").innerHTML = head + (rows || '<tr><td class="empty">No configurations yet</td></tr>');
