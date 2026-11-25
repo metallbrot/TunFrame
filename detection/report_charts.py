@@ -211,6 +211,8 @@ def _ended_by(config: dict) -> str:
     if not end.get("reason"):
         return ""
     label = ENDED_BY.get(end["reason"], end["reason"])
+    if end.get("transfer_completed") is False:
+        return f"{label} · transfer incomplete"
     return f"{label} ({end['transfer_seconds']:.1f} s)" if end.get("transfer_seconds") is not None else label
 
 

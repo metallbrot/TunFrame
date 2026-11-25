@@ -2,13 +2,42 @@
 """DNS Config Generator for BIND9"""
 
 from pathlib import Path
+import base64
 import logging
+import os
 
 logger = logging.getLogger('dns_detector')
 
 # Static DNS server IPs
 TLD_SERVER_IP = "10.10.10.10"
 ROOT_SERVER_IP = "10.5.5.5"
+
+# rndc control channel, used by main.py to flush cached tunnel answers between
+# configurations. The key file lives next to named.conf in each server's
+# bind-mounted /etc/bind; the channel only listens on the container's loopback.
+RNDC_KEY_NAME = "tunframe-rndc"
+RNDC_KEY_FILE = "rndc.key"
+RNDC_CONTAINER_KEY_PATH = f"/etc/bind/{RNDC_KEY_FILE}"
+BIND_SERVERS = ("resolver", "root-simulator", "tld-simulator")  # config dir == container name
+
+
+def rndc_preamble() -> str:
+    """named.conf lines that enable rndc on 127.0.0.1 with the generated key."""
+    return (
+        f'include "{RNDC_CONTAINER_KEY_PATH}";\n'
+        f'controls {{ inet 127.0.0.1 port 953 allow {{ 127.0.0.1; }} keys {{ "{RNDC_KEY_NAME}"; }}; }};\n\n'
+    )
+
+
+def write_rndc_keys(output_dir: str) -> None:
+    """Write one fresh rndc key into the config directory of every BIND server."""
+    secret = base64.b64encode(os.urandom(32)).decode()
+    key = f'key "{RNDC_KEY_NAME}" {{ algorithm hmac-sha256; secret "{secret}"; }};\n'
+    for server in BIND_SERVERS:
+        path = Path(output_dir) / server / "config" / RNDC_KEY_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(key)
+        path.chmod(0o600)
 
 
 def generate_dns_config(template_file: str,
@@ -24,7 +53,7 @@ def generate_dns_config(template_file: str,
     """
     template = Path(template_file).read_text()
 
-    config = template
+    config = rndc_preamble() + template
     for placeholder, value in replacements.items():
         config = config.replace(placeholder, value)
 
@@ -85,6 +114,8 @@ def generate_all_configs(tunneling_domains: list[str],
         f'}};\n'
         for domain in tunneling_domains
     )
+
+    write_rndc_keys(output_dir)
 
     # --- TLD Config ---
     generate_dns_config(

@@ -294,6 +294,7 @@ function endedBy(entry) {
   const end = entry?.wartime_end;
   if (!end?.reason) return "–";
   const label = ENDED_BY[end.reason] ?? end.reason;
+  if (end.transfer_completed === false) return `${label} · transfer incomplete`;
   return end.transfer_seconds != null ? `${label} (${end.transfer_seconds.toFixed(1)} s)` : label;
 }
 

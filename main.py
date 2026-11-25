@@ -23,7 +23,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from detection.evaluate import load_detectors, run_peacetime, run_wartime, generate_allowlists, save_results, load_global_allowlist, wartime_stop_event, transfer_complete_event, peacetime_stop_event, peacetime_done, cfg_safe_get, format_duration
 from detection.detector_base.readfile import readjson, log_end_offset
 from detection.detector_base.feature_extraction import normalize_domain, get_registered_domain, registered_domain_of
-from config.dns_config_generator import generate_all_configs
+from config.dns_config_generator import generate_all_configs, BIND_SERVERS, RNDC_CONTAINER_KEY_PATH
 from detection.reporting import RunReport, ReportLogHandler
 from detection.report_charts import build_report, fmt_bytes
 
@@ -159,6 +159,34 @@ def docker_exec_bg_logged(container: str, logfile: str, *tool_cmd: str, check: b
     )
     cmd = ["docker", "exec", "-d", container, "sh", "-c", wrapped]
     return subprocess.run(cmd, capture_output=True, text=True, check=check)
+
+
+def flush_tunnel_cache(domains) -> bool:
+    """Drop cached answers for the tunnel domains on every simulated BIND server.
+
+    DNSExfiltrator sends byte-identical queries when file, password and
+    encoding stay the same, and its server answers the init query with a TTL.
+    Without a flush, the next configuration's init is answered from the cache
+    with the previous session's ACK: the new server never sees it and the
+    client aborts with WrongAck. Only the tunnel domains are flushed; cached
+    benign answers stay.
+
+    Returns:
+        bool: True if every flush succeeded.
+    """
+    ok = True
+    for server in BIND_SERVERS:
+        for domain in domains:
+            result = subprocess.run(
+                ["docker", "exec", server, "rndc", "-k", RNDC_CONTAINER_KEY_PATH,
+                 "-s", "127.0.0.1", "flushtree", str(domain)],
+                capture_output=True, text=True, check=False,
+            )
+            if result.returncode != 0:
+                ok = False
+                logger.warning(f"[!] Could not flush cached {domain} answers on {server}: "
+                               f"{(result.stderr or result.stdout).strip()}")
+    return ok
 
 
 def check_process_running(container: str, process_name: str, expect_running: bool = True) -> bool:
@@ -1454,7 +1482,12 @@ def run_wartime_phase(
                 logger.warning("[!] dnsexfiltrator-client container does not exist, skipping pkill")
             
             time.sleep(1)
-            
+
+            # Every configuration must reach its own server: drop answers the
+            # resolver chain cached for the previous configuration's queries.
+            if flush_tunnel_cache(domains):
+                logger.info(f"[+] Flushed cached answers for {', '.join(domains)}")
+
             # Record where this configuration starts in the log BEFORE starting
             # DNSExfiltrator; the log is never truncated while the collector runs.
             config_offset = log_end_offset(LOGFILE)
@@ -1687,7 +1720,7 @@ def run_wartime_phase(
                 save_status_result(cfg, config_name, "skipped", "DNSExfiltrator server stopped before wartime", dnsexfil_config=config)
                 continue
 
-            logger.info("[+] DNSExfiltrator configuration confirmed healthy")
+            logger.info("[+] DNSExfiltrator server and client started; tunnel traffic reached the resolver")
             
             # Start every configuration from a clean detector state: alarms,
             # counters, runtime and leakage of earlier configs must not carry
@@ -1729,6 +1762,10 @@ def run_wartime_phase(
             
             # Build metadata and save results for this configuration
             config_end_timestamp = datetime.now()
+            transfer_incomplete = bool(transfer_watcher) and transfer_watcher.completed_after is None
+            if transfer_incomplete and not counts.get("interrupted"):
+                logger.warning(f"[!] {config_name}: the server never reported the file as saved - "
+                               "the exfiltration did not complete (see the server and client logs)")
             
             # Save per-config results
             config_results_file = REPORT.config_file(config_name)
@@ -1755,7 +1792,9 @@ def run_wartime_phase(
                 config_name=config_name,
                 wartime_end=wartime_end_info(counts, transfer_watcher),
                 status="interrupted" if counts.get("interrupted") else "completed",
-                status_reason="Ctrl+C during wartime; partial window" if counts.get("interrupted") else ""
+                status_reason=("Ctrl+C during wartime; partial window" if counts.get("interrupted")
+                               else "exfiltration did not complete within the window" if transfer_incomplete
+                               else "")
             )
             if counts.get("interrupted"):
                 raise KeyboardInterrupt

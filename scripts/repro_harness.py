@@ -354,6 +354,28 @@ check("T5 stop_on_transfer_complete switches the watcher", "['dnsexfiltrator', '
       and "if stop_on_transfer else None" in _war and "transfer_event=transfer_complete_event if stop_on_transfer else None" in _war,
       "watcher and transfer_event only when dnsexfiltrator.stop_on_transfer_complete is true (default)")
 
+# Cached tunnel answers are flushed between configurations
+from config import dns_config_generator as _dcg
+_bd = tempfile.mkdtemp()
+_dcg.generate_all_configs(['tunnel.com'], '192.168.4.4', '1.1.1.1', os.path.join(ROOT, 'config', 'templates'), _bd)
+_keys = [open(os.path.join(_bd, s, 'config', 'rndc.key')).read() for s in _dcg.BIND_SERVERS]
+_confs = [open(os.path.join(_bd, s, 'config', 'named.conf')).read() for s in _dcg.BIND_SERVERS]
+check("B1 BIND servers get an rndc control channel", len(set(_keys)) == 1 and 'hmac-sha256' in _keys[0]
+      and all(c.startswith('include "/etc/bind/rndc.key";') and 'inet 127.0.0.1 port 953 allow { 127.0.0.1; }' in c for c in _confs),
+      "one key for %s, loopback-only controls in every named.conf" % (_dcg.BIND_SERVERS,))
+_calls = []
+class _R: returncode = 0; stdout = ''; stderr = ''
+_orig_run = main.subprocess.run
+main.subprocess.run = lambda cmd, **kw: (_calls.append(cmd), _R())[1]
+_ok = main.flush_tunnel_cache(['tunnel.com'])
+main.subprocess.run = _orig_run
+check("B2 flush covers resolver, root and TLD", _ok and [c[2] for c in _calls] == list(_dcg.BIND_SERVERS)
+      and all(c[-2:] == ['flushtree', 'tunnel.com'] for c in _calls), "rndc flushtree on %s" % [c[2] for c in _calls])
+_war = open(os.path.join(ROOT, "main.py")).read()
+check("B3 flush runs before each server start", _war.index("if flush_tunnel_cache(domains):") < _war.index('"python3", "-u", "/app/dnsExfiltrator.py",')
+      and _war.index("server_log_offset = log_end_offset(SERVER_LOG)") > _war.index("if flush_tunnel_cache(domains):"),
+      "flush after stopping the previous server, before offsets are taken and the new server starts")
+
 # Per-run report directory, charts, report.html and dashboard API
 import pathlib as _pl2, datetime as _dt
 _old_dir = main.RESULTS_DIR
