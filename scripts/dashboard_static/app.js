@@ -4,8 +4,9 @@ const $ = id => document.getElementById(id);
 const TOKEN = document.querySelector('meta[name="tunframe-token"]').content;
 const pct = v => `${v.toFixed(1)} %`, pct0 = v => `${v.toFixed(0)} %`;
 // fmt: tables and tooltips; cell: heatmap cells; axis: y axis. lower: lower is better.
-// ULV % / DLV %: share of the window's tunnel uplink / downlink payload that passed before
-// the detector's alarm, i.e. how much of the file was uploaded when the transfer completed.
+// ULV %: how much of the exfiltrated file left before the detector's alarm (DNSExfiltrator mode:
+// decoded file bytes over the size the tool announced; replay mode: share of the raw tunnel
+// uplink). DLV %: the same share for the downlink. Net leak: file bytes before the alarm.
 const METRICS = [
   {key: "f1", label: "F1", max: 1, fmt: v => v.toFixed(3), cell: v => v.toFixed(2)},
   {key: "precision", label: "Precision", max: 1, fmt: v => v.toFixed(3), cell: v => v.toFixed(2)},
@@ -13,6 +14,7 @@ const METRICS = [
   {key: "fpr", label: "FPR", lower: true, fmt: v => v.toPrecision(3), cell: v => v ? v.toPrecision(2) : "0"},
   {key: "ulv_percent", label: "ULV %", max: 100, lower: true, fmt: pct, cell: v => `${v.toFixed(0)}%`, axis: pct0},
   {key: "dlv_percent", label: "DLV %", max: 100, lower: true, fmt: pct, cell: v => `${v.toFixed(0)}%`, axis: pct0},
+  {key: "net_up_bytes", label: "Net leak", lower: true, fmt: TF.fmtBytes, cell: TF.fmtBytes, axis: TF.fmtBytes},
   {key: "traffic_volume_up_bytes", label: "Leak up", lower: true, fmt: TF.fmtBytes, cell: TF.fmtBytes, axis: TF.fmtBytes},
   {key: "runtime", label: "Runtime", lower: true, fmt: v => `${v.toFixed(1)} s`, cell: v => `${v.toFixed(1)}s`},
 ];
@@ -70,6 +72,14 @@ function endedBy(entry) {
   const label = ENDED_BY[end.reason] ?? end.reason;
   if (end.transfer_completed === false) return `${label} · transfer incomplete`;
   return end.transfer_seconds != null ? `${label} (${end.transfer_seconds.toFixed(1)} s)` : label;
+}
+// Decoded tunnel data of a window next to the file size the tools reported.
+const NET_CHECK = {match: "✓", incomplete: "transfer incomplete", mismatch: "≠ tool size", unknown: ""};
+function netVolume(stats) {
+  if (stats?.tunnel_net_up_bytes == null) return "–";
+  const size = stats.exfil_file_bytes ?? stats.exfil_file_bytes_server;
+  const note = NET_CHECK[stats.net_volume_check] ?? "";
+  return `${TF.fmtBytes(stats.tunnel_net_up_bytes)} / ${size != null ? TF.fmtBytes(size) : "?"}${note ? ` <span class="muted">${TF.esc(note)}</span>` : ""}`;
 }
 function toast(text) {
   const el = $("toast");
@@ -253,15 +263,16 @@ function renderCurrent() {
   }
   const dets = detectors(run), rows = configRows(run);
   const byName = new Map(rows.map(r => [r.name, r]));
-  const groups = configGroups(run), cols = 4 + dets.length + 1;
+  const groups = configGroups(run), cols = 5 + dets.length + 1;
   $("all-count").textContent = `(${rows.filter(r => r.entry).length} of ${rows.length} finished)`;
-  const head = `<tr><th>Configuration</th><th class="l">Status</th><th class="l">Ended by</th><th>Tunnel q.</th>`
+  const head = `<tr><th>Configuration</th><th class="l">Status</th><th class="l">Ended by</th><th>Tunnel q.</th><th class="l">Net / file</th>`
     + dets.map(d => `<th><span class="swatch" style="background:${detectorColor(d)}"></span>${TF.esc(d)}</th>`).join("") + `<th class="l"></th></tr>`;
   const rowHTML = ({name, status, entry}) => {
     const f1 = new Map((entry?.detectors || []).map(d => [d.detector, d.f1]));
     const reason = entry?.reason && status !== "completed" ? ` <span class="muted">${TF.esc(entry.reason)}</span>` : "";
     return `<tr class="${run.current?.name === name ? "is-current" : ""}"><td>${TF.esc(name)}</td><td class="l">${statusHTML(status)}${reason}</td>
       <td class="l">${TF.esc(endedBy(entry))}</td><td>${entry?.dataset_statistics?.tunnel_queries ?? "–"}</td>
+      <td class="l">${netVolume(entry?.dataset_statistics)}</td>
       ${dets.map(d => `<td>${f1.get(d) != null ? f1.get(d).toFixed(3) : "–"}</td>`).join("")}
       <td class="l">${entry ? `<a href="/runs/${encodeURIComponent(state.runId)}/${TF.esc(entry.file)}" target="_blank" rel="noopener">json</a>` : ""}</td></tr>`;
   };
@@ -401,15 +412,15 @@ function renderDetectors() {
     colorOf: n => TF.series(LEAK.indexOf(n)),
     groups: configs.map(c => ({name: c.name, values: {"ULV %": valueOf(c, det, "ulv_percent"), "DLV %": valueOf(c, det, "dlv_percent")}})),
   });
-  const cols = ["precision", "recall", "f1", "fpr", "ulv_percent", "dlv_percent", "tp", "fp", "fn", "tn", "traffic_volume_up_bytes", "runtime"];
+  const cols = ["precision", "recall", "f1", "fpr", "ulv_percent", "dlv_percent", "tp", "fp", "fn", "tn", "net_up_bytes", "traffic_volume_up_bytes", "runtime"];
   const fmts = {precision: v => v.toFixed(3), recall: v => v.toFixed(3), f1: v => v.toFixed(3), fpr: v => v.toPrecision(3),
-                ulv_percent: pct, dlv_percent: pct, traffic_volume_up_bytes: TF.fmtBytes, runtime: v => `${v.toFixed(1)} s`};
+                ulv_percent: pct, dlv_percent: pct, net_up_bytes: TF.fmtBytes, traffic_volume_up_bytes: TF.fmtBytes, runtime: v => `${v.toFixed(1)} s`};
   const groupOf = new Map((run.config_groups || []).map(g => [g.name, g.group]));
   let last = null;
   $("det-table").innerHTML = `<tr><th>Configuration</th><th>Precision</th><th>Recall</th><th>F1</th><th>FPR</th><th>ULV %</th><th>DLV %</th>
-      <th>TP</th><th>FP</th><th>FN</th><th>TN</th><th>Leak up</th><th>Runtime</th></tr>`
+      <th>TP</th><th>FP</th><th>FN</th><th>TN</th><th>Net leak</th><th>Leak up (raw)</th><th>Runtime</th></tr>`
     + configs.map(c => {
-      const g = groupOf.get(c.name), head = sections && g !== last ? `<tr class="group-row"><td class="l" colspan="13">${TF.esc(g || "")}</td></tr>` : "";
+      const g = groupOf.get(c.name), head = sections && g !== last ? `<tr class="group-row"><td class="l" colspan="14">${TF.esc(g || "")}</td></tr>` : "";
       last = g;
       return head + `<tr><td>${TF.esc(c.name)}</td>${cols.map(k => `<td>${show(valueOf(c, det, k), fmts[k] || String)}</td>`).join("")}</tr>`;
     }).join("");

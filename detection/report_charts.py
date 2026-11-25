@@ -303,7 +303,9 @@ def render_charts(run_dir: Path, state: dict) -> list:
             ("fpr", "False positive rate by configuration", {}),
             ("ulv_percent", "ULV % (share of the uploaded file before the alarm)",
              {"ylim": (0, 105), "y_formatter": percent}),
-            ("traffic_volume_up_bytes", "Uplink leakage until first alarm",
+            ("net_up_bytes", "Net leakage: file bytes until first alarm",
+             {"y_formatter": FuncFormatter(lambda v, _: fmt_bytes(v))}),
+            ("traffic_volume_up_bytes", "Raw uplink leakage (query names) until first alarm",
              {"y_formatter": FuncFormatter(lambda v, _: fmt_bytes(v))})]
     for key, title, kw in bars:
         if any(_value(c, d, key) is not None for c in configs for d in detectors):
@@ -403,6 +405,18 @@ def _ended_by(config: dict) -> str:
     return f"{label} ({end['transfer_seconds']:.1f} s)" if end.get("transfer_seconds") is not None else label
 
 
+NET_CHECK = {"match": "✓", "incomplete": "transfer incomplete", "mismatch": "≠ tool size", "unknown": ""}
+
+
+def _net_volume(stats: dict) -> str:
+    """Decoded tunnel data of a window next to the file size the tools reported."""
+    if stats.get("tunnel_net_up_bytes") is None:
+        return ""
+    size = stats.get("exfil_file_bytes") or stats.get("exfil_file_bytes_server")
+    note = NET_CHECK.get(stats.get("net_volume_check"), "")
+    return f"{fmt_bytes(stats['tunnel_net_up_bytes'])} / {fmt_bytes(size) if size else '?'}" + (f" {note}" if note else "")
+
+
 def _status(status: str) -> str:
     icon = {"completed": "✓", "skipped": "⊘", "failed": "✕", "interrupted": "■"}.get(status, "•")
     return f'<span class="status-{html.escape(status)}">{icon} {html.escape(status)}</span>'
@@ -461,14 +475,15 @@ def render_html(run_dir: Path, state: dict, charts: list) -> Path:
                          f"<td>{_fmt(_mean(col('recall')))}</td><td>{_fmt(_mean(col('fpr')), 5)}</td>"
                          f"<td>{_pct(_mean(col('ulv_percent')))}</td><td>{_pct(_mean(col('dlv_percent')))}</td>"
                          f"<td>{detected} / {len(completed)}</td><td>{sum(v or 0 for v in col('runtime')):.1f} s</td></tr>")
-        parts.append("</table><p class='sub'>Means over the finished configurations. ULV % / DLV %: share of the "
-                     "window's tunnel uplink / downlink payload that passed before the detector's alarm "
-                     "(the share of the file when the transfer completed); lower is better.</p></div>")
+        parts.append("</table><p class='sub'>Means over the finished configurations. ULV %: share of the exfiltrated "
+                     "file that left before the detector's alarm (DNSExfiltrator mode: decoded data chunks over the file "
+                     "size the tool announced; replay mode: share of the raw tunnel uplink). DLV %: the same for the "
+                     "downlink. Lower is better.</p></div>")
 
     configs = state.get("configs", [])
     parts.append("<h2>Configurations</h2><div class='card'><table><tr><th>Configuration</th><th class='l'>Group</th>"
                  "<th class='l'>Status</th><th class='l'>Reason</th><th class='l'>Ended by</th><th>Log lines</th>"
-                 "<th>Tunnel queries</th><th>Tunnel up</th><th class='l'>File</th></tr>")
+                 "<th>Tunnel queries</th><th>Tunnel up</th><th class='l'>Net / file</th><th class='l'>File</th></tr>")
     for c in configs:
         stats = c.get("dataset_statistics") or {}
         group = groups.get(c["name"], {}).get("group", "")
@@ -476,6 +491,7 @@ def render_html(run_dir: Path, state: dict, charts: list) -> Path:
                      f"<td class='l'>{e(c.get('reason') or '')}</td><td class='l'>{e(_ended_by(c))}</td>"
                      f"<td>{stats.get('total_loglines', '')}</td><td>{stats.get('tunnel_queries', '')}</td>"
                      f"<td>{fmt_bytes(stats['tunnel_up_bytes']) if stats.get('tunnel_up_bytes') is not None else ''}</td>"
+                     f"<td class='l'>{e(_net_volume(stats))}</td>"
                      f"<td class='l'><a href='{e(c['file'])}'>{e(c['file'])}</a></td></tr>")
     parts.append("</table></div>")
 
@@ -491,23 +507,24 @@ def render_html(run_dir: Path, state: dict, charts: list) -> Path:
         for d in detectors:
             parts.append(f"<div class='card'><h3>{swatch(d)}{e(d)}</h3><table><tr><th>Configuration</th>"
                          "<th>Precision</th><th>Recall</th><th>F1</th><th>FPR</th><th>ULV %</th><th>DLV %</th>"
-                         "<th>TP</th><th>FP</th><th>FN</th><th>Leak up</th><th>Runtime</th></tr>")
+                         "<th>TP</th><th>FP</th><th>FN</th><th>Net leak</th><th>Leak up (raw)</th><th>Runtime</th></tr>")
             last_group = None
             for c in completed:
                 group = groups.get(c["name"], {}).get("group")
                 if group and group != last_group and len({g.get("group") for g in groups.values()}) > 1:
-                    parts.append(f"<tr class='group'><td colspan='12'>{e(group)}</td></tr>")
+                    parts.append(f"<tr class='group'><td colspan='13'>{e(group)}</td></tr>")
                 last_group = group
                 v = lambda key: _value(c, d, key)
                 parts.append(f"<tr><td>{e(c['name'])}</td><td>{_fmt(v('precision'))}</td><td>{_fmt(v('recall'))}</td>"
                              f"<td>{_fmt(v('f1'))}</td><td>{_fmt(v('fpr'), 5)}</td><td>{_pct(v('ulv_percent'))}</td>"
                              f"<td>{_pct(v('dlv_percent'))}</td><td>{v('tp') if v('tp') is not None else '–'}</td>"
                              f"<td>{v('fp') if v('fp') is not None else '–'}</td><td>{v('fn') if v('fn') is not None else '–'}</td>"
+                             f"<td>{fmt_bytes(v('net_up_bytes')) if v('net_up_bytes') is not None else '–'}</td>"
                              f"<td>{fmt_bytes(v('traffic_volume_up_bytes'))}</td><td>{(v('runtime') or 0):.1f} s</td></tr>")
             mean = lambda key: _mean([_value(c, d, key) for c in completed])
             parts.append(f"<tr class='mean'><td>Mean</td><td>{_fmt(mean('precision'))}</td><td>{_fmt(mean('recall'))}</td>"
                          f"<td>{_fmt(mean('f1'))}</td><td>{_fmt(mean('fpr'), 5)}</td><td>{_pct(mean('ulv_percent'))}</td>"
-                         f"<td>{_pct(mean('dlv_percent'))}</td><td></td><td></td><td></td><td></td><td></td></tr></table></div>")
+                         f"<td>{_pct(mean('dlv_percent'))}</td><td></td><td></td><td></td><td></td><td></td><td></td></tr></table></div>")
     if len(detectors) > len(SERIES):
         parts.append(f"<p class='sub'>Charts show the first {len(SERIES)} detectors; all are in the tables.</p>")
     parts.append("</main></body></html>")

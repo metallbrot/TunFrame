@@ -146,7 +146,8 @@ def _run_peacetime(detectors: list, log_generator, tunneling_domains: set) -> tu
 
 
 def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_allowlist: set,
-                expansion_factor: float = 1.0, transfer_event: threading.Event = None) -> tuple:
+                expansion_factor: float = 1.0, transfer_event: threading.Event = None,
+                payload=None) -> tuple:
     """Run one wartime window and evaluate all detectors on it.
 
     The domain universe used for TN and FPR contains only the registered
@@ -164,6 +165,13 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
             then keeps reading until it has caught up with the log as it was at
             that moment (or the log is idle), and ends with stop reason
             ``transfer_complete``. ``None`` disables this.
+        payload: ``DNSExfilPayload`` of the configuration (DNSExfiltrator mode).
+            Tunnel queries are then split into init, data and dilution queries,
+            and every result gets ``net_up_bytes``: the file bytes of the unique
+            data chunks that passed before the detector's alarm (exact, from the
+            chunk length and the encoding). ``estimated_real_traffic_up_bytes``
+            is set to the same value. Without it the estimate stays
+            ``traffic_volume_up_bytes / expansion_factor``.
 
     Returns:
         tuple: (results, logcount, tunnel_count, seen_tunnels, alldomains, counts).
@@ -185,6 +193,13 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
     # the denominator of a detector's ULV% / DLV% (share leaked before its alarm).
     counts = {"total_queries": 0, "total_responses": 0, "tunnel_queries": 0, "tunnel_responses": 0,
               "tunnel_up_bytes": 0, "tunnel_down_bytes": 0}
+    if payload is not None:
+        # tunnel_net_up_bytes: file bytes of the unique data chunks in the window.
+        counts.update({"tunnel_net_up_bytes": 0, "tunnel_data_queries": 0, "tunnel_init_queries": 0,
+                       "tunnel_dilution_queries": 0, "tunnel_retried_queries": 0})
+    window_chunks = set()
+    detector_chunks = [set() for _ in detectors]
+    detector_net = [0] * len(detectors)
     
     # The caller clears wartime_stop_event before arming the phase timer;
     # clearing it here would swallow a stop that was already signalled.
@@ -248,8 +263,27 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
                     counts["tunnel_up_bytes"] += query_payload_bytes(logline)
                 logger.debug(f"[!] Tunneling seen...({domain})")
         
+            chunk = payload.classify(logline) if payload is not None and istunnel else None
+            if chunk is not None:
+                kind, key, size = chunk
+                counts[f"tunnel_{kind}_queries"] += 1
+                if kind == "data":
+                    if key in window_chunks:
+                        counts["tunnel_retried_queries"] += 1
+                    else:
+                        window_chunks.add(key)
+                        counts["tunnel_net_up_bytes"] += size
+
             for detector in detectors:
                 detector.process_line(logline, istunnel)
+
+            # Net leakage per detector: data chunks that passed before its alarm
+            # (same rule as traffic_volume_up_bytes: the alarming line is not counted).
+            if chunk is not None and chunk[0] == "data":
+                for i, detector in enumerate(detectors):
+                    if domain not in detector.alarms and chunk[1] not in detector_chunks[i]:
+                        detector_chunks[i].add(chunk[1])
+                        detector_net[i] += chunk[2]
 
             done = True
 
@@ -274,14 +308,25 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
     
     seen_tunnels = set([domain for domain, seen in tunneling_domains_seen.items() if seen])
     
+    if payload is not None:
+        counts["exfil_file_bytes"] = payload.announced_size
+        counts["init_encoding"] = payload.announced_encoding
+
     results = []
-    for detector in detectors:
+    for i, detector in enumerate(detectors):
         logger.debug(f"\n=== Evaluation of {type(detector).__name__} ===")
-        results.append(detector.evaluate(
+        result = detector.evaluate(
             seen_tunnels, alldomains, logcount, counts["tunnel_queries"], global_allowlist,
             tunneling_responses=counts["tunnel_responses"],
             expansion_factor=expansion_factor,
-        ))
+        )
+        if payload is not None:
+            result["net_up_bytes"] = detector_net[i]
+            result["estimated_real_traffic_up_bytes"] = detector_net[i]
+            result["net_volume_method"] = "decoded"
+        else:
+            result["net_volume_method"] = "expansion_factor"
+        results.append(result)
     
     return results, logcount, tunnel_count, seen_tunnels, alldomains, counts
 

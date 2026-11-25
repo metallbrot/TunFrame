@@ -353,6 +353,47 @@ check("T2 transfer end drains the log up to that moment", _o2[1] == 3 and _o2[5]
       "processed %d lines (expected 3, 10 appended later ignored), stop_reason=%s after %.2fs" % (_o2[1], _o2[5]['stop_reason'], _el2))
 os.unlink(_tp)
 
+# Net exfiltration volume decoded from the DNSExfiltrator query format (init / data / dilution).
+from detection import exfil_payload as xp
+import base64 as _b64
+_b32 = _b64.b32encode(b"1|3030").decode().rstrip("=")
+_init = "".join(xp.WORDS["ABCDEFGHIJKLMNOPQRSTUVWXYZ234567".index(c)] for c in _b32)
+_sizes = (xp.chunk_bytes("a" * 63, "base32"), xp.chunk_bytes("kit" * 21, "base32map"), xp.chunk_bytes("ab" * 31, "hex"))
+check("X1 chunk sizes per encoding; init decoded also when split",
+      _sizes == (39, 13, 31) and xp.decode_init(_init) == ("1", 3030) and xp.decode_init(_init[:9]) is None,
+      "63 base32 chars=%d B, 21 base32map words=%d B, 62 hex chars=%d B; init %s" % (_sizes + (xp.decode_init(_init),)))
+
+class AlarmAfter(Detector):
+    """Raises an alarm on the tunnel domain at its n-th data query."""
+    def __init__(self, n):
+        super().__init__(); self.n, self.seen = n, 0
+    def detect(self, logline):
+        if logline['dns']['qname'].count('.') == 3:
+            self.seen += 1
+            if self.seen >= self.n: self.alarms.add('tunnel.com')
+_c1, _c2, _c3 = "a" * 16, "b" * 16, "c" * 8          # base32: 10, 10, 5 bytes
+_x = [evt(_init[:12] + '.tunnel.com'), evt(_init[12:] + '.tunnel.com'), evt('0.%s.tunnel.com' % _c1),
+      evt('eee.tunnel.com'), evt('0.%s.tunnel.com' % _c1), evt('1.%s.tunnel.com' % _c2),
+      evt('2.%s.tunnel.com' % _c3), evt('www.example.org')]
+with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
+    f.write("".join(json.dumps(e) + "\n" for e in _x)); _xpath = f.name
+ev.wartime_stop_event.clear()
+_xo = ev.run_wartime([Never(), AlarmAfter(3)], readjson(_xpath, max_idle_seconds=0.3),
+                     {'tunnel.com'}, set(), payload=xp.DNSExfilPayload('base32'))
+os.unlink(_xpath)
+_xc, _xr = _xo[5], _xo[0]
+main.add_leak_shares(_xr, dict(_xc))
+check("X2 net volume: unique data chunks, per detector up to its alarm, ULV % of the announced file",
+      (_xc['tunnel_init_queries'], _xc['tunnel_data_queries'], _xc['tunnel_dilution_queries'], _xc['tunnel_retried_queries']) == (2, 4, 1, 1)
+      and _xc['tunnel_net_up_bytes'] == 25 and _xc['exfil_file_bytes'] == 3030
+      and [r['net_up_bytes'] for r in _xr] == [25, 10] and _xr[0]['estimated_real_traffic_up_bytes'] == 25
+      and _xr[0]['ulv_basis'] == 'file' and abs(_xr[0]['ulv_percent'] - 100 * 25 / 3030) < 1e-9
+      and main.net_volume_check({'tunnel_net_up_bytes': 3030, 'exfil_file_bytes': 3030}, True) == 'match'
+      and main.net_volume_check({'tunnel_net_up_bytes': 25, 'exfil_file_bytes': 3030}, False) == 'incomplete',
+      "queries init/data/dilution/retried=%s net=%s file=%s per detector=%s"
+      % ((_xc['tunnel_init_queries'], _xc['tunnel_data_queries'], _xc['tunnel_dilution_queries'], _xc['tunnel_retried_queries']),
+         _xc['tunnel_net_up_bytes'], _xc['exfil_file_bytes'], [r['net_up_bytes'] for r in _xr]))
+
 # ULV% / DLV%: leaked (plus allowlisted) tunnel payload over the window's whole tunnel payload.
 _u = [{'traffic_volume_up_bytes': 25, 'allowlisted_tunnel_up_bytes': 5, 'traffic_volume_down_bytes': 0},
       {'traffic_volume_up_bytes': 500, 'traffic_volume_down_bytes': 10}]

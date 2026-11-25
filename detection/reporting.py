@@ -29,7 +29,8 @@ SUMMARY_KEYS = (
     "precision", "recall", "f1", "fpr", "accuracy",
     "tp", "fp", "tn", "fn",
     "traffic_volume_up_bytes", "traffic_volume_down_bytes",
-    "estimated_real_traffic_up_bytes", "ulv_percent", "dlv_percent",
+    "estimated_real_traffic_up_bytes", "net_up_bytes", "net_volume_method",
+    "ulv_percent", "ulv_basis", "dlv_percent",
     "runtime", "avg_process_time_ms", "processed_lines",
 )
 

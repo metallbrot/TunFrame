@@ -26,6 +26,7 @@ from detection.detector_base.feature_extraction import normalize_domain, get_reg
 from config.dns_config_generator import generate_all_configs, BIND_SERVERS, RNDC_CONTAINER_KEY_PATH
 from detection.reporting import RunReport, ReportLogHandler
 from detection.monitoring import MetricsSampler, ControlWatcher
+from detection.exfil_payload import DNSExfilPayload
 from detection.report_charts import build_report, fmt_bytes
 
 CONFIG_PATH = PROJECT_ROOT / "config.yaml"
@@ -572,19 +573,66 @@ def wartime_end_info(counts: dict, watcher: "TransferWatcher" = None) -> dict:
 def add_leak_shares(results: list, counts: dict) -> None:
     """Add ULV% and DLV% to every detector result.
 
-    ``ulv_percent`` is the share of the window's tunnel uplink payload (query
-    names) that passed before the detector's alarm; when the transfer completed
-    it is the share of the exfiltrated file that left before detection.
-    ``dlv_percent`` is the same for the downlink (answer records). Allowlisted
-    tunnel traffic never raises an alarm, so it counts as leaked. ``None`` when
-    the window carried no tunnel payload in that direction.
+    ``ulv_percent`` is how much of the exfiltrated file left before the
+    detector's alarm. In DNSExfiltrator mode it is exact: ``net_up_bytes`` (file
+    bytes of the data chunks before the alarm) over the file size the tool
+    announced (``ulv_basis: "file"``). Otherwise, or if the size is unknown, it
+    is the share of the window's raw tunnel uplink payload (query names) that
+    passed before the alarm (``ulv_basis: "tunnel_payload"``). ``dlv_percent``
+    is the raw share for the downlink (answer records). Allowlisted tunnel
+    traffic never raises an alarm, so it counts as leaked. ``None`` when there
+    is nothing to relate to.
     """
     up, down = counts.get("tunnel_up_bytes", 0), counts.get("tunnel_down_bytes", 0)
+    file_bytes = counts.get("exfil_file_bytes") or counts.get("exfil_file_bytes_server")
     for result in results or []:
         lv_up = (result.get("traffic_volume_up_bytes") or 0) + (result.get("allowlisted_tunnel_up_bytes") or 0)
         lv_down = (result.get("traffic_volume_down_bytes") or 0) + (result.get("allowlisted_tunnel_down_bytes") or 0)
-        result["ulv_percent"] = min(100.0, 100.0 * lv_up / up) if up else None
+        if result.get("net_up_bytes") is not None and file_bytes:
+            result["ulv_percent"] = min(100.0, 100.0 * result["net_up_bytes"] / file_bytes)
+            result["ulv_basis"] = "file"
+        else:
+            result["ulv_percent"] = min(100.0, 100.0 * lv_up / up) if up else None
+            result["ulv_basis"] = "tunnel_payload"
         result["dlv_percent"] = min(100.0, 100.0 * lv_down / down) if down else None
+
+
+def net_volume_check(counts: dict, transfer_completed) -> str:
+    """Compare the decoded data of a window with the file size the tools report.
+
+    Returns ``"match"`` (the unique data chunks add up to the announced size),
+    ``"mismatch"``, ``"incomplete"`` (the transfer did not finish in the
+    window) or ``"unknown"`` (no decoded volume or no size).
+    """
+    net, size = counts.get("tunnel_net_up_bytes"), counts.get("exfil_file_bytes") or counts.get("exfil_file_bytes_server")
+    if net is None or not size:
+        return "unknown"
+    if net == size:
+        return "match"
+    return "incomplete" if transfer_completed is False or net < size else "mismatch"
+
+
+def exfil_payload_for(config: dict):
+    """``DNSExfilPayload`` for a configuration, or ``None`` (with a warning) for an unknown encoding."""
+    try:
+        return DNSExfilPayload(config.get('encoding'))
+    except ValueError as e:
+        logger.warning(f"[!] {e}: net exfiltration volume falls back to the expansion-factor estimate")
+        return None
+
+
+_SERVER_FILE_SIZE = re.compile(rb"File size: ([0-9]+) bytes")
+
+
+def server_reported_file_size(start_offset: int):
+    """File size the DNSExfiltrator server reported for this configuration (server log from ``start_offset``)."""
+    try:
+        with open(SERVER_LOG, "rb") as f:
+            f.seek(start_offset)
+            sizes = _SERVER_FILE_SIZE.findall(re.sub(rb"\x1b\[[0-9;]*m", b"", f.read()))
+    except OSError:
+        return None
+    return int(sizes[-1]) if sizes else None
 
 
 def build_and_save_metadata(
@@ -672,6 +720,10 @@ def build_and_save_metadata(
             "tunnel_percentage": tunnel_percentage,
             "tunnel_up_bytes": counts.get("tunnel_up_bytes", 0),
             "tunnel_down_bytes": counts.get("tunnel_down_bytes", 0),
+            **{key: counts[key] for key in (
+                "tunnel_net_up_bytes", "tunnel_data_queries", "tunnel_init_queries", "tunnel_dilution_queries",
+                "tunnel_retried_queries", "exfil_file_bytes", "exfil_file_bytes_server", "init_encoding",
+                "source_file_bytes", "net_volume_check") if key in counts},
             "unique_domains": len(alldomains),
             "logfile": str(LOGFILE)
         },
@@ -1885,6 +1937,7 @@ def run_wartime_phase(
                     active_detectors, config_log_generator, config_tunneling_domains_set, global_allowlist,
                     expansion_factor=config_expansion_factor(config),
                     transfer_event=transfer_complete_event if stop_on_transfer else None,
+                    payload=exfil_payload_for(config),
                 )
             finally:
                 war_timer.cancel()
@@ -1918,6 +1971,17 @@ def run_wartime_phase(
                 logger.warning(f"[!] {config_name}: the server never reported the file as saved - "
                                "the exfiltration did not complete (see the server and client logs)")
             
+            # Net volume: the tools' own numbers next to the decoded DNS traffic.
+            counts["exfil_file_bytes_server"] = server_reported_file_size(server_log_offset)
+            source = client_data_dir / Path(client_filepath).name
+            if source.is_file():
+                counts["source_file_bytes"] = source.stat().st_size
+            counts["net_volume_check"] = net_volume_check(
+                counts, transfer_watcher.completed_after is not None if transfer_watcher else None)
+            if counts["net_volume_check"] == "mismatch":
+                logger.warning(f"[!] {config_name}: decoded tunnel data ({counts.get('tunnel_net_up_bytes')} B) does not "
+                               f"match the file size the tool reported ({counts.get('exfil_file_bytes') or counts.get('exfil_file_bytes_server')} B)")
+
             # Save per-config results
             config_results_file = REPORT.config_file(config_name)
             build_and_save_metadata(
