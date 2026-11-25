@@ -24,6 +24,8 @@ from detection.evaluate import load_detectors, run_peacetime, run_wartime, gener
 from detection.detector_base.readfile import readjson, log_end_offset
 from detection.detector_base.feature_extraction import normalize_domain, get_registered_domain, registered_domain_of
 from config.dns_config_generator import generate_all_configs
+from detection.reporting import RunReport, ReportLogHandler
+from detection.report_charts import build_report, fmt_bytes
 
 CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 DOCKER_PATH = PROJECT_ROOT / "docker"
@@ -31,6 +33,7 @@ DOCKER_COMPOSE_FILE = DOCKER_PATH / "docker-compose.yml"
 DOCKER_ENV_FILE = DOCKER_PATH / ".env"
 CONFIG_TEMPLATE_DIR = PROJECT_ROOT / "config" / "templates"
 RESULTS_DIR = PROJECT_ROOT / "results"
+REPORT = None  # RunReport of the current run, created in run_setup
 DETECTOR_PATH = PROJECT_ROOT / "detection" / "detectors"
 LOGFILE = DOCKER_PATH / "dns-collector" / "logs" / "dnslogs.json"
 
@@ -70,6 +73,13 @@ console_handler.setLevel(logging.INFO)
 logger.addHandler(console_handler)
 
 logger.propagate = False
+
+
+def banner(title: str, width: int = 60) -> None:
+    """Log a section heading."""
+    logger.info("\n" + "=" * width)
+    logger.info(title)
+    logger.info("=" * width)
 
 
 def load_config(path=CONFIG_PATH):
@@ -455,9 +465,10 @@ def build_and_save_metadata(
     counts: dict = None,
     status: str = "completed",
     status_reason: str = "",
-    dnsexfil_config: dict = None
+    dnsexfil_config: dict = None,
+    config_name: str = "wartime",
 ):
-    """Build metadata and save results to file.
+    """Build metadata, save the results file and record it in the run report.
 
     ``tunnel_percentage`` is the share of tunneling queries among all queries;
     responses are counted separately in ``counts``.
@@ -527,6 +538,11 @@ def build_and_save_metadata(
         "run_status": {"status": status, "reason": status_reason},
     }
     save_results(str(results_file), results, metadata)
+    get_report(cfg).record_config(
+        config_name, status, status_reason, results_file, results=results,
+        dataset_statistics=metadata["dataset_statistics"], dnsexfil_config=dnsexfil_config,
+        started=start_timestamp, finished=end_timestamp,
+    )
 
 
 _RUN_INFO = None
@@ -588,8 +604,9 @@ def save_status_result(cfg: dict, config_name: str, status: str, reason: str, dn
     Returns:
         Path: The written results file.
     """
+    report = get_report(cfg)
     name = cfg_safe_get(cfg, ['global', 'name'], 'experiment')
-    results_file = RESULTS_DIR / f"results_{name}_{config_name}_{status}_{int(time.time())}.json"
+    results_file = report.config_file(config_name)
     metadata = {
         "experiment": {
             "name": name,
@@ -604,7 +621,42 @@ def save_status_result(cfg: dict, config_name: str, status: str, reason: str, dn
     }
     logger.warning(f"[!] Configuration {config_name} {status}: {reason}")
     save_results(str(results_file), [], metadata)
+    report.record_config(config_name, status, reason, results_file, dnsexfil_config=dnsexfil_config)
     return results_file
+
+
+def start_run_report(cfg: dict) -> RunReport:
+    """Create the run directory in ``RESULTS_DIR`` and mirror the console log into it."""
+    global REPORT
+    close_run_report()
+    REPORT = RunReport(
+        RESULTS_DIR,
+        name=cfg_safe_get(cfg, ['global', 'name'], 'experiment'),
+        description=cfg_safe_get(cfg, ['global', 'description']),
+        run_info=get_run_info(),
+        complete_config=cfg,
+    )
+    logger.addHandler(ReportLogHandler(REPORT))
+    return REPORT
+
+
+def get_report(cfg: dict) -> RunReport:
+    """Return the current run report, creating one if none is active."""
+    return REPORT or start_run_report(cfg)
+
+
+def close_run_report() -> None:
+    """Stop mirroring the console log into the run directory."""
+    for handler in list(logger.handlers):
+        if isinstance(handler, ReportLogHandler):
+            logger.removeHandler(handler)
+            handler.close()
+
+
+def set_phase(phase: str, detail: str = "") -> None:
+    """Record the current phase in the run report, if there is one."""
+    if REPORT is not None:
+        REPORT.set_phase(phase, detail)
 
 
 # Default values for every DNSExfiltrator configuration.
@@ -731,9 +783,7 @@ def get_dnsexfiltrator_configs(cfg: dict):
         logger.info("[+] DNSExfiltrator disabled")
         return []
 
-    logger.info("\n" + "="*60)
-    logger.info("DNSExfiltrator Configurations")
-    logger.info("="*60)
+    banner("DNSExfiltrator Configurations")
 
     def with_base(base: dict, overrides: dict) -> dict:
         """Deep-copy ``base`` and apply ``overrides`` on top."""
@@ -800,6 +850,8 @@ def run_setup(cfg: dict):
     global RESULTS_DIR
     check_config_keys(cfg)
     RESULTS_DIR = resolve_results_dir(cfg)
+    report = start_run_report(cfg)
+    logger.info(f"[+] Run directory: {report.dir}")
 
     # Load timing configuration (minutes)
     wartime_duration_config = cfg_safe_get(cfg, ["timing", "wartime_duration"], 60)
@@ -827,6 +879,7 @@ def run_setup(cfg: dict):
     # sure every config domain is routed to the simulated DNS hierarchy.
     dnsexfil_configs = get_dnsexfiltrator_configs(cfg)
     validate_dnsexfil_domains(dnsexfil_configs, tunneling_domains)
+    report.set_planned_configs([c['name'] for c in dnsexfil_configs] or ["wartime"])
     
     # Calculate total estimated duration
     if dnsexfil_configs:
@@ -834,9 +887,7 @@ def run_setup(cfg: dict):
     else:
         total_estimated_duration = peacetime_duration + wartime_duration
     
-    logger.info("\n" + "="*60)
-    logger.info("EXPERIMENT SETUP")
-    logger.info("="*60)
+    banner("EXPERIMENT SETUP")
     logger.info(f"[+] Experiment: {cfg_safe_get(cfg, ['global', 'name'], '')}")
     logger.info(f"[+] Peacetime Duration: {format_duration(peacetime_duration)}")
     
@@ -849,8 +900,7 @@ def run_setup(cfg: dict):
     logger.info(f"[+] Total Estimated Duration: {format_duration(total_estimated_duration)}")
     logger.info("="*60)
 
-    results_file = RESULTS_DIR / f"results_{cfg_safe_get(cfg, ['global', 'name'], 'experiment')}_{int(time.time())}.json"
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    results_file = report.config_file("wartime")
     
     # Ensure docker is stopped before cleaning up
     logger.info("[+] Ensuring clean state...")
@@ -928,10 +978,9 @@ def run_peacetime_phase(
 
     # PEACETIME
     if peacetime_duration:
-        logger.info("\n" + "="*60)
-        logger.info("PEACETIME PHASE - Building Allowlist")
-        logger.info("="*60)
+        banner("PEACETIME PHASE - Building Allowlist")
         logger.info(f"[+] Peacetime started: Running for {format_duration(peacetime_duration)}...")
+        set_phase("peacetime")
         
         peacetime_stop_event.clear()
         peacetime_done.clear()
@@ -970,77 +1019,76 @@ def run_peacetime_phase(
     )
 
 
+def _short_list(items, limit: int = 5) -> str:
+    """Return up to ``limit`` items of a list, with a count of the rest."""
+    items = sorted(items)
+    shown = ", ".join(items[:limit])
+    return shown + (f" (+{len(items) - limit} more)" if len(items) > limit else "")
+
+
 def show_results(results, config_name=None, peacetime_logcount=0, wartime_duration=None):
-    """Display experiment results in a formatted summary table.
-    
-    Args:
-        results: List of detector evaluation result dictionaries
-        config_name: Optional configuration name (for DNSExfiltrator multi-config runs)
-        peacetime_logcount: Number of log lines processed during peacetime
-        wartime_duration: Duration of wartime in seconds
+    """Log a compact results table for one wartime window.
+
+    Full per-detector results (alarm lists, leakage, timing) are in the
+    window's file under ``configs/``; the console shows the headline numbers
+    and up to five missed and falsely flagged domains per detector.
     """
     if not results:
         logger.info("\n[!] No results to display")
         return
-    
-    header = "EXPERIMENT RESULTS"
-    if config_name:
-        header += f" - Configuration: {config_name}"
-    
-    logger.info("\n" + "="*80)
-    logger.info(header)
-    logger.info("="*80)
-    
-    # Summary statistics
+
+    title = f"RESULTS - {config_name}" if config_name else "RESULTS"
+    details = []
     if peacetime_logcount > 0:
-        logger.info(f"Peacetime log lines: {peacetime_logcount}")
+        details.append(f"peacetime lines: {peacetime_logcount}")
     if wartime_duration:
-        logger.info(f"Wartime duration: {format_duration(wartime_duration)}")
+        details.append(f"wartime: {format_duration(wartime_duration)}")
+    banner(title + (f"  ({', '.join(details)})" if details else ""), width=96)
+
+    logger.info(f"{'Detector':<18} {'Prec':>6} {'Recall':>6} {'F1':>6} {'FPR':>8} "
+                f"{'TP':>4} {'FP':>5} {'FN':>4} {'Leak up':>11} {'Leak down':>11} {'Runtime':>8}")
+    logger.info("-" * 96)
+    sorted_results = sorted(results, key=lambda r: r.get('f1', 0), reverse=True)
+    for r in sorted_results:
+        logger.info(
+            f"{r.get('detector_name', 'Unknown')[:18]:<18} {r.get('precision', 0):>6.3f} {r.get('recall', 0):>6.3f} "
+            f"{r.get('f1', 0):>6.3f} {r.get('fpr', 0):>8.5f} {r.get('tp', 0):>4} {r.get('fp', 0):>5} {r.get('fn', 0):>4} "
+            f"{fmt_bytes(r.get('traffic_volume_up_bytes', 0)):>11} {fmt_bytes(r.get('traffic_volume_down_bytes', 0)):>11} "
+            f"{r.get('runtime', 0):>7.1f}s"
+        )
+    for r in sorted_results:
+        missed = r.get('false_negatives_list') or []
+        false_alarms = r.get('false_positives_list') or []
+        if missed:
+            logger.info(f"  {r.get('detector_name')}: missed {_short_list(missed)}")
+        if false_alarms:
+            logger.info(f"  {r.get('detector_name')}: false alarms {_short_list(false_alarms)}")
     logger.info("")
-    
-    # Table header
-    logger.info(f"{'Detector':<20} {'Accuracy':>10} {'Precision':>10} {'Recall':>10} {'F1':>10} {'TPR':>10} {'FPR':>12} {'TP':>6} {'FP':>6} {'FN':>6} {'Runtime(s)':>12}")
-    logger.info("-"*80)
-    
-    # Sort results by F1 score (descending)
-    sorted_results = sorted(results, key=lambda x: x.get('f1', 0), reverse=True)
-    
-    for result in sorted_results:
-        detector_name = result.get('detector_name', 'Unknown')
-        accuracy = result.get('accuracy', 0)
-        precision = result.get('precision', 0)
-        recall = result.get('recall', 0)
-        f1 = result.get('f1', 0)
-        tpr = result.get('tpr', 0)
-        fpr = result.get('fpr', 0)
-        tp = result.get('tp', 0)
-        fp = result.get('fp', 0)
-        fn = result.get('fn', 0)
-        runtime = result.get('runtime', 0)
-        
-        logger.info(f"{detector_name:<20} {accuracy:>10.4f} {precision:>10.4f} {recall:>10.4f} {f1:>10.4f} {tpr:>10.4f} {fpr:>12.6f} {tp:>6} {fp:>6} {fn:>6} {runtime:>12.3f}")
-    
-    logger.info("-"*80)
-    
-    # Show alarms for each detector
-    for result in sorted_results:
-        detector_name = result.get('detector_name', 'Unknown')
-        alarms = result.get('alarms_raised', [])
-        tp_list = result.get('true_positives_list', [])
-        fp_list = result.get('false_positives_list', [])
-        fn_list = result.get('false_negatives_list', [])
-        tunneling_domains = result.get('tunneling_domains', [])
-        
-        logger.info(f"\n{detector_name}:")
-        logger.info(f"  Tunneling domains: {tunneling_domains}")
-        logger.info(f"  Alarms raised: {alarms}")
-        logger.info(f"  True Positives: {tp_list}")
-        if fp_list:
-            logger.info(f"  False Positives: {fp_list}")
-        if fn_list:
-            logger.info(f"  False Negatives: {fn_list}")
-    
-    logger.info("")
+
+
+def log_run_summary(report) -> None:
+    """Log one line per configuration with each detector's F1 score."""
+    configs = report.state.get("configs", [])
+    detectors = []
+    for config in configs:
+        for row in config.get("detectors", []):
+            if row["detector"] not in detectors:
+                detectors.append(row["detector"])
+    state = report.state
+    banner(f"RUN SUMMARY - {state.get('name')} ({state.get('status')})", width=96)
+    if not configs:
+        logger.info("No configuration finished.")
+        return
+    logger.info(f"{'Configuration':<28} {'Status':<12}" + "".join(f" {d[:10]:>10}" for d in detectors))
+    logger.info("-" * 96)
+    for config in configs:
+        f1 = {row["detector"]: row.get("f1") for row in config.get("detectors", [])}
+        cells = "".join(f" {f1[d]:>10.3f}" if f1.get(d) is not None else f" {'-':>10}" for d in detectors)
+        logger.info(f"{config['name'][:28]:<28} {config['status']:<12}{cells}")
+        if config.get("reason") and config["status"] != "completed":
+            logger.info(f"  {config['reason']}")
+    if detectors:
+        logger.info("(values: F1 per detector)")
 
 
 def run_wartime_phase(
@@ -1066,9 +1114,7 @@ def run_wartime_phase(
     is evaluated, saved with status ``interrupted``, and the interrupt is then
     re-raised.
     """
-    logger.info("\n" + "="*60)
-    logger.info("WARTIME PHASE")
-    logger.info("="*60)
+    banner("WARTIME PHASE")
 
     tunneling_enabled = bool(cfg_safe_get(cfg, ["traffic", "tunnel", "replay"], False))
     tunneling_pcap = cfg_safe_get(cfg, ["traffic", "tunnel", "pcap"], "")
@@ -1287,6 +1333,7 @@ def run_wartime_phase(
             filepath = config.get('file', '/data/synthetic_cc_data_100.csv')
             
             logger.info(f"\n[+] --- Running DNSExfiltrator configuration: {config_name} ({config_idx + 1}/{len(dnsexfil_configs)}) ---")
+            set_phase("wartime", config_name)
             
             # Use config domains as tunneling domains for this run
             config_tunneling_domains_set = {ground_truth_domain(d) for d in domains} if domains else tunneling_domains_set
@@ -1574,7 +1621,7 @@ def run_wartime_phase(
             config_end_timestamp = datetime.now()
             
             # Save per-config results
-            config_results_file = RESULTS_DIR / f"results_{cfg_safe_get(cfg, ['global', 'name'], 'experiment')}_{config_name}_{int(time.time())}.json"
+            config_results_file = REPORT.config_file(config_name)
             build_and_save_metadata(
                 results_file=config_results_file,
                 results=results,
@@ -1595,6 +1642,7 @@ def run_wartime_phase(
                 cfg=cfg,
                 counts=counts,
                 dnsexfil_config=dict(config, expansion_factor_used=config_expansion_factor(config)),
+                config_name=config_name,
                 status="interrupted" if counts.get("interrupted") else "completed",
                 status_reason="Ctrl+C during wartime; partial window" if counts.get("interrupted") else ""
             )
@@ -1626,6 +1674,7 @@ def run_wartime_phase(
     else:
         # Standard wartime without DNSExfiltrator
         logger.info(f"[+] Wartime started: Running for {format_duration(wartime_duration)}...")
+        set_phase("wartime")
         
         # Fresh generator for wartime, starting where wartime began in the log
         wartime_log_generator = readjson(str(LOGFILE), start_offset=wartime_offset)
@@ -1689,6 +1738,21 @@ def run_wartime_phase(
     return alldomains, all_results
 
 
+def finalize_run_report(status: str, reason: str = "") -> None:
+    """Close the run report: final status, summary, charts and report.html."""
+    if REPORT is None:
+        return
+    REPORT.finish(status, reason)
+    log_run_summary(REPORT)
+    try:
+        report_html = build_report(REPORT.dir)
+        logger.info(f"[+] Report: {report_html}")
+    except Exception as e:
+        logger.warning(f"[!] Could not build report.html: {e}")
+    logger.info(f"[+] Run directory: {REPORT.dir}")
+    close_run_report()
+
+
 def _show_partial_results(all_experiment_results: list, peace_logcount: int, wartime_duration) -> None:
     """Print the windows that finished before the run was aborted."""
     if not all_experiment_results:
@@ -1714,6 +1778,7 @@ def main():
     all_experiment_results = []
     peace_logcount = 0
     wartime_duration = None
+    run_status, run_reason = "failed", "aborted"
     
     try:
         # Run setup phase
@@ -1747,19 +1812,23 @@ def main():
             server_ip, public_resolver, cfg, results_file, dnsexfil_configs,
             results_sink=all_experiment_results, peacetime_packets=peacetime_packets
         )
+        run_status, run_reason = "completed", ""
 
     except KeyboardInterrupt:
         logger.info("\n[!] Interrupted by user - shutting down...")
         _show_partial_results(all_experiment_results, peace_logcount, wartime_duration)
+        run_status, run_reason = "interrupted", "Ctrl+C"
 
     except Exception as e:
         logger.error(f"[!] Error: {e}", exc_info=True)
         _show_partial_results(all_experiment_results, peace_logcount, wartime_duration)
+        run_status, run_reason = "failed", str(e)
 
     finally:
         peacetime_stop_event.set()
         wartime_stop_event.set()
         compose_down()
+        finalize_run_report(run_status, run_reason)
 
 
 if __name__ == "__main__":

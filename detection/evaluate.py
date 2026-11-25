@@ -240,13 +240,12 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
     
     results = []
     for detector in detectors:
-        logger.info(f"\n=== Evaluation of {type(detector).__name__} ===")
+        logger.debug(f"\n=== Evaluation of {type(detector).__name__} ===")
         results.append(detector.evaluate(
             seen_tunnels, alldomains, logcount, counts["tunnel_queries"], global_allowlist,
             tunneling_responses=counts["tunnel_responses"],
             expansion_factor=expansion_factor,
         ))
-        logger.info("")
     
     return results, logcount, tunnel_count, seen_tunnels, alldomains, counts
 

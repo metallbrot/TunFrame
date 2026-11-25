@@ -139,7 +139,7 @@ class Detector(ABC):
         expansion_factor = float(expansion_factor) if expansion_factor else 1.0
 
         alarms = self.alarms.difference(self.allowlist)
-        logger.info(f"num alarms: {len(alarms)}")
+        logger.debug(f"num alarms: {len(alarms)}")
         
         tunneling_loglines = tunneling_queries + tunneling_responses
         if tunneling_loglines == 0:
@@ -158,38 +158,38 @@ class Detector(ABC):
         # lines are skipped before detect() and must not dilute the average.
         avg_process_time = self.total_process_time / self.detect_calls if self.detect_calls > 0 else 0.0
         
-        logger.info("\n--- Performance Metrics ---")
-        logger.info(f"Total runtime: {runtime:.3f}s")
-        logger.info(f"Avg processing time per logline: {avg_process_time*1000:.3f} ms")
-        logger.info(f"Processed loglines: {self.processed_lines}/{total_loglines} (reached detect(): {self.detect_calls})")
+        logger.debug("\n--- Performance Metrics ---")
+        logger.debug(f"Total runtime: {runtime:.3f}s")
+        logger.debug(f"Avg processing time per logline: {avg_process_time*1000:.3f} ms")
+        logger.debug(f"Processed loglines: {self.processed_lines}/{total_loglines} (reached detect(): {self.detect_calls})")
         
-        logger.info("\n--- Detection Metrics ---")
-        logger.info(f"Total tunnel queries seen: {tunneling_queries} (responses: {tunneling_responses})")
-        logger.info(f"Tunnel queries missed: {self.tunneling_missed} (responses: {self.tunneling_missed_responses})")
-        logger.info(f"Traffic volume down: {format_bytes(self.lv_down)}, Traffic volume up: {format_bytes(self.lv_up)}")
+        logger.debug("\n--- Detection Metrics ---")
+        logger.debug(f"Total tunnel queries seen: {tunneling_queries} (responses: {tunneling_responses})")
+        logger.debug(f"Tunnel queries missed: {self.tunneling_missed} (responses: {self.tunneling_missed_responses})")
+        logger.debug(f"Traffic volume down: {format_bytes(self.lv_down)}, Traffic volume up: {format_bytes(self.lv_up)}")
         if self.allowlisted_tunnel_lines:
-            logger.info(f"Allowlisted tunnel traffic (never inspected): {self.allowlisted_tunnel_queries} queries, "
+            logger.debug(f"Allowlisted tunnel traffic (never inspected): {self.allowlisted_tunnel_queries} queries, "
                         f"{self.allowlisted_tunnel_responses} responses, up {format_bytes(self.allowlisted_tunnel_lv_up)}, "
                         f"down {format_bytes(self.allowlisted_tunnel_lv_down)}")
-        logger.info(f"Estimated real traffic volume up: {format_bytes(self.lv_up / expansion_factor)}")
+        logger.debug(f"Estimated real traffic volume up: {format_bytes(self.lv_up / expansion_factor)}")
         
         if alarms:
-            logger.info(f"Alarms: {alarms}")
+            logger.debug(f"Alarms: {alarms}")
         else:
-            logger.info("Alarms: None")
+            logger.debug("Alarms: None")
         
-        logger.info(f"Number of unique registered domains: {len(all_domains)}")
-        logger.info(f"Length Allowlist: {len(self.allowlist)}")
-        logger.info(f"Total alarms: {len(alarms)}, TP: {len(tp)} FP: {len(fp)}, TN: {len(tn)}, FN: {len(fn)}")
+        logger.debug(f"Number of unique registered domains: {len(all_domains)}")
+        logger.debug(f"Length Allowlist: {len(self.allowlist)}")
+        logger.debug(f"Total alarms: {len(alarms)}, TP: {len(tp)} FP: {len(fp)}, TN: {len(tn)}, FN: {len(fn)}")
         
         accuracy = (len(tp) + len(tn)) / (len(tp) + len(fp) + len(tn) + len(fn)) if (len(tp) + len(fp) + len(tn) + len(fn)) > 0 else 0
         precision = len(tp) / (len(tp) + len(fp)) if (len(tp) + len(fp)) > 0 else 0
         recall = tpr
         f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
         
-        logger.info(f"Accuracy: {accuracy:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}")
-        logger.info(f"TPR: {tpr:.4f}, FPR: {fpr:.6f}")
-        logger.info("")
+        logger.debug(f"Accuracy: {accuracy:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}")
+        logger.debug(f"TPR: {tpr:.4f}, FPR: {fpr:.6f}")
+        logger.debug("")
         
         return {
             # Meta information
