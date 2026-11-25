@@ -1,7 +1,10 @@
 import subprocess
 import time
+import json
+import re
+import shlex
 import yaml
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import sys
 import threading
 import logging
@@ -19,7 +22,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from detection.evaluate import load_detectors, run_peacetime, run_wartime, generate_allowlists, save_results, load_global_allowlist, wartime_stop_event, peacetime_stop_event, peacetime_done, cfg_safe_get, format_duration
 from detection.detector_base.readfile import readjson, log_end_offset
-from detection.detector_base.feature_extraction import normalize_domain
+from detection.detector_base.feature_extraction import normalize_domain, get_registered_domain, registered_domain_of
 from config.dns_config_generator import generate_all_configs
 
 CONFIG_PATH = PROJECT_ROOT / "config.yaml"
@@ -121,6 +124,31 @@ def docker_exec(container: str, *docker_cmd: str, check: bool = True):
     subprocess.run(cmd, check=check)
 
 
+def docker_exec_bg_logged(container: str, logfile: str, *tool_cmd: str, check: bool = False):
+    """Start a tool detached in ``container`` with its output made visible again.
+
+    The dnsexfiltrator containers run ``sleep infinity`` as their main process, so
+    a plain ``docker exec -d`` would have Docker discard the tool's stdout/stderr
+    and ``docker logs`` (which follows PID 1) would show nothing. This wraps the
+    tool in a POSIX ``sh -c`` that tees the combined output both to ``logfile``
+    (on a bind-mounted path, so it persists on the host) and to the container's
+    PID 1 stdout (``/proc/1/fd/1``), so it reappears in ``docker logs`` and the
+    Docker Desktop logs panel. ``init: true`` on both containers makes PID 1 the
+    init process whose fd 1 is the container's log stream.
+
+    ``sh`` on both images is dash, so the POSIX pipe form is used rather than bash
+    process substitution.
+    """
+    inner = " ".join(shlex.quote(a) for a in tool_cmd)
+    log_dir = str(PurePosixPath(logfile).parent)
+    wrapped = (
+        f"mkdir -p {shlex.quote(log_dir)}; "
+        f"{inner} 2>&1 | tee -a {shlex.quote(logfile)} > /proc/1/fd/1"
+    )
+    cmd = ["docker", "exec", "-d", container, "sh", "-c", wrapped]
+    return subprocess.run(cmd, capture_output=True, text=True, check=check)
+
+
 def check_process_running(container: str, process_name: str, expect_running: bool = True) -> bool:
     """Check if a process is running in a Docker container.
     
@@ -157,8 +185,58 @@ def check_process_running(container: str, process_name: str, expect_running: boo
         return False
 
 
+def tunnel_traffic_seen(start_offset: int, tunneling_domains: set, settle_seconds: float = 3.0) -> bool:
+    """Return True if a query/response for a tunneling domain was logged since
+    ``start_offset``.
+
+    The DNSExfiltrator client is a one-shot exfiltration: for a small input
+    file it finishes in about a second, long before the pre-wartime liveness
+    gate runs, so a client that is no longer running has usually *finished*,
+    not crashed. This reads the DNS log from the offset recorded before the
+    client started and looks for traffic to a ground-truth tunneling domain,
+    which proves the client actually ran. It rescans until such a line appears
+    or ``settle_seconds`` elapse, so it tolerates both collector lag and the
+    continuous benign traffic that keeps the log growing.
+    """
+    if not tunneling_domains:
+        return False
+    deadline = time.monotonic() + settle_seconds
+    while True:
+        end = log_end_offset(LOGFILE)
+        if end > start_offset:
+            try:
+                with open(LOGFILE, "rb") as f:
+                    f.seek(start_offset)
+                    data = f.read(end - start_offset)
+                for raw in data.split(b"\n"):
+                    raw = raw.strip(b"\x00 \t\r\n")
+                    if not raw:
+                        continue
+                    try:
+                        event = json.loads(raw.decode("utf-8"))
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    if get_registered_domain(event) in tunneling_domains:
+                        return True
+            except OSError as e:
+                logger.debug(f"[!] tunnel_traffic_seen read error: {e}")
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.2)
+
+
+def ground_truth_domain(domain) -> str:
+    """Return the registered domain of a configured tunneling domain.
+
+    Detectors alarm on registered domains, so ground truth must use the same
+    granularity; a configured ``tunnel.example.com`` becomes ``example.com``.
+    Names without a known public suffix are kept as they are.
+    """
+    return registered_domain_of(domain) or normalize_domain(domain)
+
+
 def replay_fire_and_forget(pcap: str, pps: int, label: str):
-    """Fire and forget: startet tcpreplay ohne zu warten"""
+    """Start tcpreplay in the replayer container without waiting for it."""
     if not pcap:
         logger.warning(f"[-] Skipping {label} replay (disabled)")
         return
@@ -199,6 +277,104 @@ def start_replay(label: str, pcap: str, pps) -> bool:
     _started_replays.add(label)
     threading.Thread(target=replay_fire_and_forget, args=(pcap, pps, label), daemon=True).start()
     return True
+
+
+# ---------------------------------------------------------------------------
+# Managed replays for the peacetime -> wartime split.
+#
+# Unlike the fire-and-forget continuous stream above, these replays are started
+# and stopped explicitly. Peacetime replays a pcap, is stopped, and reports how
+# many packets it actually sent; wartime then resumes the SAME pcap right after
+# that packet (via ``prepare_wartime_segment``), so wartime never reuses the
+# benign traffic the allowlist was learned from, and every DNSExfiltrator config
+# window sees the identical wartime segment.
+#
+# Each label writes tcpreplay's output to its own logfile inside the replayer
+# container; ``exec tcpreplay`` replaces the wrapping shell so the only matching
+# process is tcpreplay itself, stopped with ``pkill -INT -x tcpreplay`` (SIGINT
+# makes tcpreplay flush its final "Actual: N packets sent" stats before exiting).
+# ---------------------------------------------------------------------------
+REPLAY_LOG_DIR = "/tmp/tunframe-replays"
+
+
+def _replay_logfile(label: str) -> str:
+    return f"{REPLAY_LOG_DIR}/{label}.log"
+
+
+def managed_replay_start(label: str, pcap: str, pps) -> None:
+    """Start a tcpreplay in the replayer container, detached, capturing its stats."""
+    if not pcap:
+        logger.warning(f"[-] Skipping {label} replay (no pcap)")
+        return
+    rate = "" if (pps is None or pps <= 0) else f"--pps={pps} "
+    logfile = _replay_logfile(label)
+    inner = (
+        f"mkdir -p {REPLAY_LOG_DIR} && cd /app && "
+        f"exec tcpreplay {rate}-i replay0 {pcap} > {logfile} 2>&1"
+    )
+    rate_desc = "original speed" if not rate else f"{pps} PPS"
+    logger.info(f"[+] Starting {label} replay ({rate_desc}) from {pcap}")
+    subprocess.run(
+        ["docker", "exec", "-d", "pcap-replayer", "sh", "-c", inner], check=False
+    )
+
+
+def managed_replay_stop_all() -> None:
+    """Stop every tcpreplay in the replayer container with SIGINT so stats flush."""
+    subprocess.run(
+        ["docker", "exec", "pcap-replayer", "pkill", "-INT", "-x", "tcpreplay"],
+        capture_output=True, text=True, check=False,
+    )
+
+
+def managed_replay_packets_sent(label: str) -> int:
+    """Return the packet count tcpreplay reported for ``label`` (0 if unknown)."""
+    res = subprocess.run(
+        ["docker", "exec", "pcap-replayer", "cat", _replay_logfile(label)],
+        capture_output=True, text=True, check=False,
+    )
+    match = re.search(r"Actual:\s+(\d+)\s+packets", res.stdout or "")
+    return int(match.group(1)) if match else 0
+
+
+def prepare_wartime_segment(label: str, pcap: str, packets_sent: int, host_pcap_dir: Path) -> str:
+    """Return the pcap basename wartime should replay for ``label``.
+
+    When peacetime sent ``packets_sent`` packets, slice them off the front with
+    ``editcap`` so wartime starts at the packet after peacetime stopped. Returns
+    the original pcap unchanged when there was no peacetime, when ``editcap`` is
+    unavailable, or when slicing fails (wartime then replays from packet 0).
+    """
+    if not pcap or not packets_sent or packets_sent <= 0:
+        return pcap
+    editcap = shutil.which("editcap")
+    if not editcap:
+        logger.warning(
+            f"[!] editcap not found on host; {label} wartime replays from packet 0 "
+            f"(cannot skip the {packets_sent} peacetime packets)"
+        )
+        return pcap
+    src = host_pcap_dir / pcap
+    if not src.exists():
+        logger.warning(f"[!] {label} pcap {src} not found; cannot slice, replaying from packet 0")
+        return pcap
+    segment = f"{src.stem}__wartime_segment.pcap"
+    dst = host_pcap_dir / segment
+    try:
+        # editcap <in> <out> 1-N  deletes packets 1..N, keeping N+1..end.
+        subprocess.run(
+            [editcap, str(src), str(dst), f"1-{packets_sent}"],
+            check=True, capture_output=True, text=True,
+        )
+    except (subprocess.CalledProcessError, OSError) as e:
+        detail = getattr(e, "stderr", "") or str(e)
+        logger.warning(f"[!] editcap failed for {label}: {detail}; wartime replays from packet 0")
+        return pcap
+    if not dst.exists() or dst.stat().st_size == 0:
+        logger.warning(f"[!] {label} wartime segment is empty (peacetime consumed the whole pcap?)")
+        return pcap
+    logger.info(f"[+] {label}: skipping {packets_sent} peacetime packets; wartime replays {segment}")
+    return segment
 
 
 # Ratio of encoded query characters to raw payload bytes per encoding
@@ -573,7 +749,7 @@ def get_dnsexfiltrator_configs(cfg: dict):
     base_cfg = with_base(DNSEXFIL_DEFAULTS, baseline_cfg)
     base_cfg.pop('name', None)
     if baseline_cfg:
-        logger.info(f"[+] Processing baseline configuration")
+        logger.info("[+] Processing baseline configuration")
         configs.append(with_base(base_cfg, {'name': 'baseline'}))
 
     # 2. Sweeps (inherit the filled baseline)
@@ -637,9 +813,6 @@ def run_setup(cfg: dict):
         peacetime_duration = (float(wartime_duration_config) / 3) * 60
     else:
         peacetime_duration = float(peacetime_duration_config) * 60
-    
-    if not peacetime_duration:
-        peacetime_duration = 0
 
     tunneling_domains = cfg_safe_get(cfg, ["traffic", "tunnel", "tunneling_domains"], [])
     server_ip = cfg_safe_get(cfg, ['traffic', 'tunnel', 'tunnel_server_ip'], '192.168.4.4')
@@ -681,10 +854,7 @@ def run_setup(cfg: dict):
     
     # Ensure docker is stopped before cleaning up
     logger.info("[+] Ensuring clean state...")
-    try:
-        compose_down()
-    except:
-        pass
+    compose_down()
     
     # Clear old logfile. This is the only truncation: the collector container
     # is stopped at this point. During a run, phases read from byte offsets.
@@ -696,7 +866,7 @@ def run_setup(cfg: dict):
     else:
         LOGFILE.touch()
 
-    write_docker_env(PROJECT_ROOT / cfg_safe_get(cfg, ['traffic', 'pcap_path']))
+    write_docker_env(PROJECT_ROOT / (cfg_safe_get(cfg, ['traffic', 'pcap_path']) or './pcaps'))
     generate_all_configs(tunneling_domains, server_ip, public_resolver, CONFIG_TEMPLATE_DIR, DOCKER_PATH)
     
     logger.info("[+] Starting docker compose")
@@ -715,7 +885,8 @@ def run_peacetime_phase(
     tunneling_domains_set: set,
     global_allowlist_path: str,
     active_detectors_list: list,
-    log_generator
+    log_generator,
+    cfg: dict,
 ):
     """Peacetime phase: Load detectors, run peacetime, generate allowlists.
     
@@ -731,8 +902,6 @@ def run_peacetime_phase(
     
     start_timestamp = datetime.now()
 
-    # Start benign traffic
-    cfg = load_config()
     benign_enabled = bool(cfg_safe_get(cfg, ["traffic", "benign", "enabled"], False))
     benign_pcap = cfg_safe_get(cfg, ["traffic", "benign", "pcap"], "")
     benign_pps = cfg_safe_get(cfg, ["traffic", "benign", "pps"])
@@ -745,20 +914,20 @@ def run_peacetime_phase(
     # peacetime disabled they are started by the wartime phase.
     if peacetime_duration:
         if benign_enabled:
-            start_replay("benign", benign_pcap, benign_pps)
+            managed_replay_start("benign", benign_pcap, benign_pps)
         if wildcard_enabled:
-            start_replay("wildcard", wildcard_pcap, wildcard_pps)
+            managed_replay_start("wildcard", wildcard_pcap, wildcard_pps)
 
         if wildcard_enabled or benign_enabled:
             logger.info(f"[+] Benign traffic started - running for {format_duration(peacetime_duration)}...")
         else:
-            logger.info(f"[+] No benign traffic - waiting for external DNS traffic or wartime...")
+            logger.info("[+] No benign traffic - waiting for external DNS traffic or wartime...")
 
     alldomains = set()
     peace_logcount = 0
 
     # PEACETIME
-    if peacetime_duration and peacetime_duration != 0:
+    if peacetime_duration:
         logger.info("\n" + "="*60)
         logger.info("PEACETIME PHASE - Building Allowlist")
         logger.info("="*60)
@@ -777,13 +946,27 @@ def run_peacetime_phase(
         
         # run_peacetime() sets peacetime_done itself when it returns.
         if peacetime_done.is_set():
-            logger.info(f"[+] Peacetime done!")
-        
+            logger.info("[+] Peacetime done!")
+
         logger.info("[+] Generating allowlists...")
 
+    # Stop the peacetime replays and remember how far each pcap was replayed, so
+    # wartime can resume right after the last peacetime packet (see
+    # prepare_wartime_segment). Empty when there was no peacetime phase -> P=0 ->
+    # wartime replays each pcap from packet 0.
+    peacetime_packets = {}
+    if peacetime_duration:
+        managed_replay_stop_all()
+        time.sleep(1)  # let tcpreplay flush its final "Actual: N packets" stats
+        if benign_enabled:
+            peacetime_packets["benign"] = managed_replay_packets_sent("benign")
+        if wildcard_enabled:
+            peacetime_packets["wildcard"] = managed_replay_packets_sent("wildcard")
+        logger.info(f"[+] Peacetime replay stopped at (packets sent): {peacetime_packets}")
+
     return (
-        active_detectors, global_allowlist, tunneling_domains_set, 
-        alldomains, peace_logcount, start_timestamp
+        active_detectors, global_allowlist, tunneling_domains_set,
+        alldomains, peace_logcount, start_timestamp, peacetime_packets
     )
 
 
@@ -873,7 +1056,8 @@ def run_wartime_phase(
     cfg: dict,
     results_file: Path,
     dnsexfil_configs: list = None,
-    results_sink: list = None
+    results_sink: list = None,
+    peacetime_packets: dict = None
 ):
     """Wartime phase: Start tunnel traffic, run wartime, build and save results.
 
@@ -898,30 +1082,41 @@ def run_wartime_phase(
     wartime_offset = log_end_offset(LOGFILE)
 
 
-    # Start benign traffic if enabled (regardless of DNSExfiltrator)
+    # Benign/wildcard background traffic. These are started and stopped per
+    # wartime window (managed_replay_*), each beginning at the packet after the
+    # one peacetime stopped on: prepare_wartime_segment slices the already-shown
+    # peacetime packets off the front once, here, and the window replays the
+    # remaining segment. With no peacetime the segment is the whole pcap.
+    peacetime_packets = peacetime_packets or {}
+    host_pcap_dir = PROJECT_ROOT / (cfg_safe_get(cfg, ['traffic', 'pcap_path']) or './pcaps')
+
     benign_enabled = bool(cfg_safe_get(cfg, ["traffic", "benign", "enabled"], False))
     benign_pcap = cfg_safe_get(cfg, ["traffic", "benign", "pcap"], "")
     benign_pps = cfg_safe_get(cfg, ["traffic", "benign", "pps"])
-    
-    if benign_enabled:
-        # Continues the peacetime replay if one is running; never restarts it.
-        if start_replay("benign", benign_pcap, benign_pps):
-            logger.info(f"[+] Benign traffic replay started - running for {format_duration(wartime_duration)}...")
-
-    # Wildcard traffic runs alongside benign and tunnel traffic in wartime too
-    # (README: all three sources run together). A peacetime replay continues.
     wildcard_enabled = bool(cfg_safe_get(cfg, ["traffic", "wildcard", "enabled"], False))
-    if wildcard_enabled:
-        if start_replay("wildcard", cfg_safe_get(cfg, ["traffic", "wildcard", "pcap"], ""),
-                        cfg_safe_get(cfg, ["traffic", "wildcard", "pps"])):
-            logger.info(f"[+] Wildcard traffic replay started - running for {format_duration(wartime_duration)}...")
-        # Note: tcpreplay runs in background, no direct verification possible
+    wildcard_pcap = cfg_safe_get(cfg, ["traffic", "wildcard", "pcap"], "")
+    wildcard_pps = cfg_safe_get(cfg, ["traffic", "wildcard", "pps"])
+
+    benign_wartime_pcap = (
+        prepare_wartime_segment("benign", benign_pcap, peacetime_packets.get("benign", 0), host_pcap_dir)
+        if benign_enabled else benign_pcap
+    )
+    wildcard_wartime_pcap = (
+        prepare_wartime_segment("wildcard", wildcard_pcap, peacetime_packets.get("wildcard", 0), host_pcap_dir)
+        if wildcard_enabled else wildcard_pcap
+    )
+
+    def start_background_replays():
+        """Start benign/wildcard for one wartime window, from the segment start."""
+        if benign_enabled:
+            managed_replay_start("benign", benign_wartime_pcap, benign_pps)
+        if wildcard_enabled:
+            managed_replay_start("wildcard", wildcard_wartime_pcap, wildcard_pps)
 
     # Start tunnel traffic if enabled and DNSExfiltrator is not
     if tunneling_enabled and not dnsexfil_enabled:
         if start_replay("tunnel", tunneling_pcap, tunneling_pps):
             logger.info(f"[+] Tunnel replay started - running for {format_duration(wartime_duration)}...")
-        # Note: tcpreplay runs in background, no direct verification possible
     
     # Configurations requested by the user; each one gets a results file,
     # also when it is skipped.
@@ -956,9 +1151,9 @@ def run_wartime_phase(
         
         # Check resolver container
         if not container_is_running("resolver"):
-            logger.error(f"[!] Resolver container is not running!")
-            logger.error(f"[!] DNSExfiltrator needs the resolver at 172.16.0.2")
-            logger.error(f"[!] Try running: docker compose -f docker-compose.yml --profile essential up -d")
+            logger.error("[!] Resolver container is not running!")
+            logger.error("[!] DNSExfiltrator needs the resolver at 172.16.0.2")
+            logger.error("[!] Try running: docker compose -f docker-compose.yml --profile essential up -d")
             dnsexfil_configs = []
         else:
             # Check if resolver is listening on port 53 or if BIND9 is running
@@ -968,19 +1163,19 @@ def run_wartime_phase(
                 check_result = subprocess.run(check_cmd, capture_output=True, text=True, check=False)
                 if check_result.returncode == 0:
                     if "named" not in check_result.stdout and "bind9" not in check_result.stdout.lower():
-                        logger.warning(f"[!] BIND9 process not found in resolver, but continuing anyway")
+                        logger.warning("[!] BIND9 process not found in resolver, but continuing anyway")
                         # Don't fail here, the connectivity test will catch it
                 else:
-                    logger.warning(f"[!] Could not check resolver processes")
+                    logger.warning("[!] Could not check resolver processes")
             except Exception as e:
                 logger.warning(f"[!] Could not check resolver: {e}. Continuing with connectivity test.")
             
             # Start the dnsexfiltrator containers once
-            logger.info(f"[+] Starting DNSExfiltrator containers...")
+            logger.info("[+] Starting DNSExfiltrator containers...")
             try:
                 logger.info(f"[+] Running: docker compose -f {DOCKER_COMPOSE_FILE} --profile dnsexfiltrator up -d")
                 compose_up("dnsexfiltrator")
-                time.sleep(5)  # Increased from 3 to 5 seconds
+                time.sleep(5)
                 
                 # List containers to verify they were created
                 try:
@@ -991,14 +1186,14 @@ def run_wartime_phase(
                     pass
                 
                 # Wait for containers to be fully ready
-                logger.info(f"[+] Waiting for DNSExfiltrator containers to be ready...")
+                logger.info("[+] Waiting for DNSExfiltrator containers to be ready...")
                 for i in range(10):  # Try for 10 seconds
                     if container_exists("dnsexfiltrator-server") and container_exists("dnsexfiltrator-client"):
                         logger.info(f"[+] DNSExfiltrator containers are ready after {i+1}s")
                         break
                     time.sleep(1)
                 else:
-                    logger.error(f"[!] DNSExfiltrator containers did not start within 10 seconds")
+                    logger.error("[!] DNSExfiltrator containers did not start within 10 seconds")
                     dnsexfil_configs = []
             except Exception as e:
                 logger.error(f"[!] Failed to start DNSExfiltrator containers: {e}")
@@ -1020,15 +1215,15 @@ def run_wartime_phase(
                     pass
             
             if not server_exists or not client_exists:
-                logger.error(f"[!] DNSExfiltrator containers do not exist!")
+                logger.error("[!] DNSExfiltrator containers do not exist!")
                 logger.error(f"[!] Server exists: {server_exists}, Client exists: {client_exists}")
                 dnsexfil_configs = []
             elif not server_running or not client_running:
-                logger.error(f"[!] DNSExfiltrator containers not running!")
+                logger.error("[!] DNSExfiltrator containers not running!")
                 logger.error(f"[!] Server running: {server_running}, Client running: {client_running}")
                 dnsexfil_configs = []
             else:
-                logger.info(f"[+] DNSExfiltrator containers are running")
+                logger.info("[+] DNSExfiltrator containers are running")
                 
                 # Check if client can reach resolver
                 connectivity_ok = True
@@ -1037,11 +1232,11 @@ def run_wartime_phase(
                     test_cmd = ["docker", "exec", "dnsexfiltrator-client", "dig", "@172.16.0.2", "example.com", "+timeout=2", "+tries=1"]
                     test_result = subprocess.run(test_cmd, capture_output=True, text=True, check=False, timeout=5)
                     if "connection timed out" in test_result.stdout or "no servers could be reached" in test_result.stdout:
-                        logger.error(f"[!] DNSExfiltrator client cannot reach resolver at 172.16.0.2!")
+                        logger.error("[!] DNSExfiltrator client cannot reach resolver at 172.16.0.2!")
                         logger.error(f"[!] Dig output: {test_result.stdout[-200:]}")
                         connectivity_ok = False
                     else:
-                        logger.info(f"[+] Connectivity check: DNSExfiltrator client can reach resolver")
+                        logger.info("[+] Connectivity check: DNSExfiltrator client can reach resolver")
                 except Exception as e:
                     logger.warning(f"[!] Could not verify connectivity: {e}")
                     connectivity_ok = True  # Assume ok if we can't check
@@ -1052,7 +1247,7 @@ def run_wartime_phase(
         all_seen_domains = set()
 
         if not dnsexfil_configs:
-            logger.warning(f"[!] No DNSExfiltrator configurations will be run")
+            logger.warning("[!] No DNSExfiltrator configurations will be run")
             for skipped in requested_configs:
                 save_status_result(cfg, skipped.get('name', 'config'), "skipped",
                                    "DNSExfiltrator readiness checks failed (resolver, containers or connectivity); see console log",
@@ -1079,7 +1274,7 @@ def run_wartime_phase(
                 logger.warning(f"[!] Server exists: {server_exists_at_start}, Client exists: {client_exists_at_start}")
                 # Try to recreate containers
                 try:
-                    logger.info(f"[+] Attempting to recreate DNSExfiltrator containers...")
+                    logger.info("[+] Attempting to recreate DNSExfiltrator containers...")
                     compose_up("dnsexfiltrator")
                     time.sleep(5)
                 except Exception as e:
@@ -1094,7 +1289,7 @@ def run_wartime_phase(
             logger.info(f"\n[+] --- Running DNSExfiltrator configuration: {config_name} ({config_idx + 1}/{len(dnsexfil_configs)}) ---")
             
             # Use config domains as tunneling domains for this run
-            config_tunneling_domains_set = {normalize_domain(d) for d in domains} if domains else tunneling_domains_set
+            config_tunneling_domains_set = {ground_truth_domain(d) for d in domains} if domains else tunneling_domains_set
             
             # Update domain file for this configuration (single file)
             domains_file = server_volume_dir / "domains.txt"
@@ -1108,12 +1303,12 @@ def run_wartime_phase(
             if container_exists("dnsexfiltrator-server"):
                 docker_exec("dnsexfiltrator-server", "pkill", "-f", "dnsExfiltrator.py", check=False)
             else:
-                logger.warning(f"[!] dnsexfiltrator-server container does not exist, skipping pkill")
+                logger.warning("[!] dnsexfiltrator-server container does not exist, skipping pkill")
             
             if container_exists("dnsexfiltrator-client"):
                 docker_exec("dnsexfiltrator-client", "pkill", "-f", "DNSExfiltrator.exe", check=False)
             else:
-                logger.warning(f"[!] dnsexfiltrator-client container does not exist, skipping pkill")
+                logger.warning("[!] dnsexfiltrator-client container does not exist, skipping pkill")
             
             time.sleep(1)
             
@@ -1127,14 +1322,13 @@ def run_wartime_phase(
             
             # Start server for this configuration
             logger.info(f"[+] Starting DNSExfiltrator server with {len(domains)} domains")
-            server_cmd = [
-                "docker", "exec", "-d", "dnsexfiltrator-server",
+            result = docker_exec_bg_logged(
+                "dnsexfiltrator-server", "/app/logs/server.log",
                 "python3", "-u", "/app/dnsExfiltrator.py",
                 "-f", "/app/domains.txt",
                 "-p", password,
                 "-o", "/app/outputfile",
-            ]
-            result = subprocess.run(server_cmd, capture_output=True, text=True)
+            )
             if result.returncode != 0:
                 logger.error(f"[!] Failed to start server: {result.stderr}")
                 if result.stdout:
@@ -1161,19 +1355,25 @@ def run_wartime_phase(
                         capture_output=True, text=True, check=False
                     )
                     pid = pid_check.stdout.strip() if pid_check.stdout.strip() else "unknown"
-                except:
+                except Exception:
                     pid = "unknown"
                 logger.info(f"  Server started (PID: {pid})")
             
             # Verify server is running
             time.sleep(1)
             if not check_process_running("dnsexfiltrator-server", "dnsExfiltrator.py"):
-                logger.error(f"[!] DNSExfiltrator server failed to start or crashed!")
+                logger.error("[!] DNSExfiltrator server failed to start or crashed!")
                 logger.error(f"[!] Skipping configuration: {config_name}")
                 save_status_result(cfg, config_name, "skipped", "DNSExfiltrator server failed to start or crashed", dnsexfil_config=config)
                 continue
             
-            # Start client for this configuration
+            # The window (timer and background traffic) starts before the
+            # one-shot client, so benign/wildcard traffic overlaps the
+            # exfiltration instead of following it.
+            wartime_stop_event.clear()
+            war_timer = PhaseTimer(wartime_stop_event, wartime_duration).start()
+            start_background_replays()
+
             logger.info(f"[+] Starting DNSExfiltrator client: {filepath}")
             
             throttle = config.get('throttle')
@@ -1206,7 +1406,6 @@ def run_wartime_phase(
             # Use absolute paths in container
             # DNSExfiltrator.exe is built in /app by Dockerfile
             cmd = [
-                "docker", "exec", "-d", "dnsexfiltrator-client",
                 "mono", "/app/DNSExfiltrator.exe",
                 f"/data/{client_filepath}",
                 "/data/domains.txt",
@@ -1226,7 +1425,9 @@ def run_wartime_phase(
                 cmd.append(f"dil={dil}")
             
 
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = docker_exec_bg_logged(
+                "dnsexfiltrator-client", "/data/logs/client.log", *cmd,
+            )
             if result.returncode != 0:
                 logger.error(f"[!] Failed to start client: {result.stderr}")
                 if result.stdout:
@@ -1239,7 +1440,7 @@ def run_wartime_phase(
                         capture_output=True, text=True, check=False
                     )
                     if exe_check.returncode != 0:
-                        logger.error(f"[!] DNSExfiltrator.exe not found at /app/DNSExfiltrator.exe")
+                        logger.error("[!] DNSExfiltrator.exe not found at /app/DNSExfiltrator.exe")
                         logger.error(f"[!] Executable check: {exe_check.stderr}")
                     else:
                         logger.info(f"[+] DNSExfiltrator.exe exists: {exe_check.stdout.strip()}")
@@ -1291,32 +1492,49 @@ def run_wartime_phase(
                         capture_output=True, text=True, check=False
                     )
                     pid = pid_check.stdout.strip() if pid_check.stdout.strip() else "unknown"
-                except:
+                except Exception:
                     pid = "unknown"
                 logger.info(f"  Client started (PID: {pid})")
             
-            # Verify client is running
+            # Verify the configuration actually produced tunnel traffic.
+            #
+            # The client is a one-shot exfiltration: for a small input file it
+            # finishes in ~1s, before this gate runs. "Client no longer running"
+            # therefore does NOT mean it crashed, so we must not skip on that
+            # alone. A config is healthy if the client is still sending OR it
+            # already put tunnel traffic in the log; it is genuinely broken only
+            # when the client is gone AND no tunnel traffic appeared (bad exe,
+            # unreachable resolver, server not answering, ...).
             time.sleep(1)
-            if not check_process_running("dnsexfiltrator-client", "DNSExfiltrator.exe"):
-                logger.error(f"[!] DNSExfiltrator client failed to start or crashed!")
-                logger.error(f"[!] Skipping configuration: {config_name}")
-                save_status_result(cfg, config_name, "skipped", "DNSExfiltrator client failed to start or crashed", dnsexfil_config=config)
-                continue
-            
-            # Give some time for the client to start generating traffic
-            time.sleep(2)
-            
-            # Final verification that both processes are running before starting detection
+            client_running = check_process_running(
+                "dnsexfiltrator-client", "DNSExfiltrator.exe", expect_running=False
+            )
+            if not client_running:
+                # Not running: confirm it finished successfully rather than
+                # crashing by looking for its tunnel traffic in the log. This
+                # also makes the gate robust when the client container lacks
+                # procps (no `ps`), where the liveness check can never succeed.
+                if not tunnel_traffic_seen(config_offset, config_tunneling_domains_set, settle_seconds=3.0):
+                    logger.error("[!] DNSExfiltrator client is not running and produced no tunnel traffic!")
+                    logger.error(f"[!] Skipping configuration: {config_name}")
+                    war_timer.cancel()
+                    managed_replay_stop_all()
+                    save_status_result(cfg, config_name, "skipped", "DNSExfiltrator client produced no tunnel traffic", dnsexfil_config=config)
+                    continue
+                logger.info("[+] Client already finished; tunnel traffic captured in log")
+            else:
+                logger.info("[+] DNSExfiltrator client is running")
+
+            # The server must stay up to ACK the exfiltration. Unlike the
+            # client it is not one-shot, so its liveness is a valid check.
             if not check_process_running("dnsexfiltrator-server", "dnsExfiltrator.py"):
                 logger.error(f"[!] DNSExfiltrator server is not running! Skipping config: {config_name}")
+                war_timer.cancel()
+                managed_replay_stop_all()
                 save_status_result(cfg, config_name, "skipped", "DNSExfiltrator server stopped before wartime", dnsexfil_config=config)
                 continue
-            if not check_process_running("dnsexfiltrator-client", "DNSExfiltrator.exe"):
-                logger.error(f"[!] DNSExfiltrator client is not running! Skipping config: {config_name}")
-                save_status_result(cfg, config_name, "skipped", "DNSExfiltrator client stopped before wartime", dnsexfil_config=config)
-                continue
-            
-            logger.info(f"[+] Both DNSExfiltrator server and client are confirmed running")
+
+            logger.info("[+] DNSExfiltrator configuration confirmed healthy")
             
             # Start every configuration from a clean detector state: alarms,
             # counters, runtime and leakage of earlier configs must not carry
@@ -1324,12 +1542,8 @@ def run_wartime_phase(
             for detector in active_detectors:
                 detector.reset()
 
-            # Reset wartime event and run detection for this configuration
-            wartime_stop_event.clear()
-            war_timer = PhaseTimer(wartime_stop_event, wartime_duration).start()
-            
             logger.info(f"[+] Wartime started for config {config_name}: Running for {format_duration(wartime_duration)}...")
-            
+
             # Run wartime detection for this specific configuration with clean state
             try:
                 results, logcount, tunnel_count, seen_tunnels, config_alldomains, counts = run_wartime(
@@ -1338,6 +1552,9 @@ def run_wartime_phase(
                 )
             finally:
                 war_timer.cancel()
+                # Stop this window's background replay so the next config starts
+                # it again from the same segment packet.
+                managed_replay_stop_all()
             
             # Store results for this configuration
             all_results.append({
@@ -1389,8 +1606,8 @@ def run_wartime_phase(
             # Check if traffic was detected
             if logcount == 0:
                 logger.warning(f"[!] WARNING: No DNS traffic detected for config {config_name}!")
-                logger.warning(f"[!] This likely means DNSExfiltrator failed to generate traffic")
-                logger.warning(f"[!] Check: DNSExfiltrator processes, network connectivity, DNS resolver")
+                logger.warning("[!] This likely means DNSExfiltrator failed to generate traffic")
+                logger.warning("[!] Check: DNSExfiltrator processes, network connectivity, DNS resolver")
             elif tunnel_count == 0:
                 logger.warning(f"[!] WARNING: No tunneling traffic detected for config {config_name}!")
                 logger.warning(f"[!] DNS traffic was seen ({logcount} lines) but no tunneling domains were detected")
@@ -1415,7 +1632,10 @@ def run_wartime_phase(
         
         wartime_stop_event.clear()
         war_timer = PhaseTimer(wartime_stop_event, wartime_duration).start()
-        
+
+        # Start benign/wildcard for this window, from the wartime segment start.
+        start_background_replays()
+
         # Run wartime (will block until stop event is set or all tunnels detected).
         # The TN/FPR universe is the set of domains seen in this wartime only.
         try:
@@ -1425,6 +1645,7 @@ def run_wartime_phase(
             )
         finally:
             war_timer.cancel()
+            managed_replay_stop_all()
         
         end_timestamp = datetime.now()
         
@@ -1468,6 +1689,20 @@ def run_wartime_phase(
     return alldomains, all_results
 
 
+def _show_partial_results(all_experiment_results: list, peace_logcount: int, wartime_duration) -> None:
+    """Print the windows that finished before the run was aborted."""
+    if not all_experiment_results:
+        return
+    logger.info("\n[+] Showing partial results before exit:")
+    for result_entry in all_experiment_results:
+        show_results(
+            result_entry['results'],
+            config_name=result_entry.get('config_name'),
+            peacetime_logcount=peace_logcount,
+            wartime_duration=wartime_duration,
+        )
+
+
 def main():
     cfg = load_config(CONFIG_PATH)
     
@@ -1478,6 +1713,7 @@ def main():
     
     all_experiment_results = []
     peace_logcount = 0
+    wartime_duration = None
     
     try:
         # Run setup phase
@@ -1487,7 +1723,7 @@ def main():
             dnsexfil_configs
         ) = run_setup(cfg)
         
-        tunneling_domains_set = {normalize_domain(d) for d in tunneling_domains}
+        tunneling_domains_set = {ground_truth_domain(d) for d in tunneling_domains}
         
         # Create log generator
         log_generator = readjson(str(LOGFILE), start_offset=log_end_offset(LOGFILE))
@@ -1495,62 +1731,35 @@ def main():
         # Run peacetime phase
         (
             active_detectors, global_allowlist, tunneling_domains_set,
-            alldomains, peace_logcount, start_timestamp
+            alldomains, peace_logcount, start_timestamp, peacetime_packets
         ) = run_peacetime_phase(
             peacetime_duration, tunneling_domains_set, global_allowlist_path,
-            active_detectors_list, log_generator
+            active_detectors_list, log_generator, cfg
         )
-        
+
         generate_allowlists(active_detectors, global_allowlist)
-        
+
 
         # Run wartime phase(s)
         alldomains, _ = run_wartime_phase(
             wartime_duration, peacetime_duration, tunneling_domains_set, global_allowlist,
             active_detectors, alldomains, start_timestamp,
             server_ip, public_resolver, cfg, results_file, dnsexfil_configs,
-            results_sink=all_experiment_results
+            results_sink=all_experiment_results, peacetime_packets=peacetime_packets
         )
-
-        compose_down()
 
     except KeyboardInterrupt:
         logger.info("\n[!] Interrupted by user - shutting down...")
-        peacetime_stop_event.set()
-        wartime_stop_event.set()
-        compose_down()
-        # Show results if any were collected
-        if all_experiment_results:
-            logger.info("\n[+] Showing partial results before exit:")
-            for result_entry in all_experiment_results:
-                show_results(
-                    result_entry['results'],
-                    config_name=result_entry.get('config_name'),
-                    peacetime_logcount=peace_logcount,
-                    wartime_duration=wartime_duration
-                )
+        _show_partial_results(all_experiment_results, peace_logcount, wartime_duration)
 
     except Exception as e:
         logger.error(f"[!] Error: {e}", exc_info=True)
+        _show_partial_results(all_experiment_results, peace_logcount, wartime_duration)
+
+    finally:
         peacetime_stop_event.set()
         wartime_stop_event.set()
         compose_down()
-        # Show results if any were collected
-        if all_experiment_results:
-            logger.info("\n[+] Showing partial results before exit:")
-            for result_entry in all_experiment_results:
-                show_results(
-                    result_entry['results'],
-                    config_name=result_entry.get('config_name'),
-                    peacetime_logcount=peace_logcount,
-                    wartime_duration=wartime_duration
-                )
-
-    finally:
-        try:
-            compose_down()
-        except:
-            pass
 
 
 if __name__ == "__main__":

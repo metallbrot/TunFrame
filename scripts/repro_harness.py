@@ -226,13 +226,30 @@ check("M10 peacetime replay only with peacetime", "    if peacetime_duration:\n 
 
 src_w = open(os.path.join(ROOT, "main.py")).read()
 war_part = src_w[src_w.index("def run_wartime_phase("):]
-check("C6 wildcard replay in wartime", 'start_replay("wildcard"' in war_part, "run_wartime_phase starts or continues the wildcard replay")
+# Wartime now resumes benign/wildcard from the packet after peacetime stopped:
+# it slices a wartime segment and starts a managed replay per window.
+check("C6 wildcard replay in wartime",
+      'prepare_wartime_segment("wildcard"' in war_part and 'managed_replay_start("wildcard"' in war_part,
+      "run_wartime_phase slices a wildcard wartime segment and replays it per window")
 
 _d7 = tempfile.mkdtemp()
 with open(os.path.join(_d7, 'top.csv'), 'w') as f:
     f.write("1,Google.com\n2,example.org.\n# comment\n\n0.0.0.0 ads.example.net\nplain.de\n")
 al = ev.load_global_allowlist('top.csv', base_dir=_d7)
-check("C7 allowlist parsing and path", al == {'google.com', 'example.org', 'ads.example.net', 'plain.de'}, "parsed %s" % sorted(al))
+check("C7 allowlist parsing and path", al == {'google.com', 'example.org', 'example.net', 'plain.de'}, "parsed %s" % sorted(al))
+
+from detection.detector_base.feature_extraction import get_txt_content
+from detection.detector_base.metrics import true_positive_rate, false_positive_rate
+txt = get_txt_content(resp('a.tunnel.com', [{"rdatatype": "TXT", "rdata": "ND"}, {"rdatatype": "A", "rdata": "1.2.3.4"}]))
+check("F1 TXT content uses collector schema", txt == ["ND"], "got %s (expected ['ND'])" % txt)
+gt = main.ground_truth_domain('Tunnel.Example.com.')
+check("F2 ground truth at registered-domain level", gt == 'example.com', "tunnel.example.com -> %s (expected example.com)" % gt)
+check("F3 rates guard the denominator", (true_positive_rate(0, 0), false_positive_rate(0, 4), true_positive_rate(1, 1)) == (0, 0.0, 0.5),
+      "tpr(0,0), fpr(0,4), tpr(1,1) = %s" % ((true_positive_rate(0, 0), false_positive_rate(0, 4), true_positive_rate(1, 1)),))
+_war = src_w[src_w.index("def run_wartime_phase("):]
+check("F4 background traffic starts before the client",
+      _war.index("start_background_replays()\n\n            logger.info(f\"[+] Starting DNSExfiltrator client") < _war.index('"mono", "/app/DNSExfiltrator.exe"'),
+      "benign/wildcard replays start before the one-shot client")
 
 try:
     main.check_config_keys({'timing': {'duration': 60}})

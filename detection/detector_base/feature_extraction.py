@@ -1,6 +1,6 @@
 import math
 from collections import Counter
-from typing import Dict, List
+from typing import Dict
 import tldextract
 from datetime import datetime
 from fqdn import FQDN
@@ -37,9 +37,14 @@ def normalize_domain(domain) -> str:
     return str(domain or "").strip().rstrip(".").lower()
 
 
+def registered_domain_of(name) -> str:
+    """Return the normalized registered domain of a domain name ('' if none)."""
+    return normalize_domain(tldextract.extract(normalize_domain(name)).top_domain_under_public_suffix)
+
+
 def get_registered_domain(event: Dict) -> str:
     """Return the normalized (lowercase) registered domain of the query name."""
-    return normalize_domain(tldextract.extract(get_fqdn(event)).top_domain_under_public_suffix)
+    return registered_domain_of(get_fqdn(event))
 
 def longest_common_substring(s1: str, s2: str) -> int:
     """
@@ -167,40 +172,6 @@ def answer_payload_bytes(event: Dict) -> int:
     return total
 
 
-def extract_subdomains_list(qname: str) -> List[str]:
-    """
-    Split domain into subdomains.
-    Example: 'paaanfty.tunnel.com' -> ['paaanfty', 'tunnel', 'com']
-    """
-    split_domain = qname.strip('.').split('.')
-    if len(split_domain) > 2:
-        return qname.strip('.').split('.')[:-2]
-    else:
-        return []
-
-
-
-def get_longest_subdomain(qname: str) -> str:
-    """Return the longest subdomain (usually the leftmost for tunnels)."""
-    parts = extract_subdomains_list(qname)
-    return max(parts, key=len) if parts else ''
-
-
-def subdomain_length(qname: str) -> int:
-    """Total length of leftmost subdomain (before first dot)."""
-    parts = extract_subdomains_list(qname)
-    return len(parts[0]) if parts else 0
-
-
-def count_max_length_subdomains(qname: str) -> int:
-    """
-    Count subdomains that hit DNS label length limit (63 bytes).
-    Tunnels often max out to maximize bandwidth.
-    """
-    parts = extract_subdomains_list(qname)
-    return sum(1 for part in parts if len(part) == 63)
-
-
 def count_long_consonant_sequences(text: str, min_length: int = 4) -> int:
     """
     Count consecutive consonant strings >= min_length.
@@ -244,12 +215,6 @@ def shannon_entropy(text: str) -> float:
             entropy -= p * math.log2(p)
     
     return entropy
-
-
-def entropy_longest_subdomain(qname: str) -> float:
-    """Entropy of the longest subdomain (usually leftmost for tunnels)."""
-    longest = get_longest_subdomain(qname)
-    return shannon_entropy(longest)
 
 
 def entropy_full_domain(qname: str) -> float:
@@ -329,9 +294,14 @@ def extract_query_ip(event: Dict) -> str:
 def get_txt_content(logline: dict) -> list:
     """Extract TXT record data from a DNS response."""
     txt_records = []
-    for rr in logline.get("dns", {}).get("resource-records", {}).get("an", []):
-        if rr.get("type") == "TXT":
-            txt_records.extend(rr.get("data", []))
+    for rr in json_safe_get(logline, "dns.resource-records.an", []) or []:
+        if not isinstance(rr, dict) or str(rr.get("rdatatype", "")).upper() != "TXT":
+            continue
+        rdata = rr.get("rdata", "")
+        if isinstance(rdata, list):
+            txt_records.extend(rdata)
+        elif rdata:
+            txt_records.append(rdata)
     return txt_records
 
 def is_response(event: Dict) -> bool:

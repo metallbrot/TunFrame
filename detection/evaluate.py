@@ -4,7 +4,7 @@ import importlib
 import inspect
 import threading
 import logging
-from detection.detector_base.feature_extraction import get_registered_domain, is_response, get_fqdn, validate_fqdn
+from detection.detector_base.feature_extraction import get_registered_domain, registered_domain_of, is_response, get_fqdn, validate_fqdn
 import json
 
 # Get the logger configured in main.py
@@ -16,8 +16,8 @@ def parse_allowlist_line(line: str) -> str:
 
     Supported formats: one domain per line, CSV such as Tranco's
     ``rank,domain``, tab- or space-separated columns (hosts-file style), and
-    ``#`` comments. The last column that looks like a domain is used. Domains
-    are lowercased and a trailing dot is removed.
+    ``#`` comments. The last column that looks like a domain is used and
+    reduced to its registered domain, the granularity detectors alarm on.
     """
     line = line.split('#', 1)[0].strip()
     if not line:
@@ -25,7 +25,7 @@ def parse_allowlist_line(line: str) -> str:
     fields = [f.strip().strip('"\'') for f in re.split(r'[,;\t ]+', line) if f.strip()]
     for field in reversed(fields):
         if '.' in field and not field.replace('.', '').isdigit():
-            return field.rstrip('.').lower()
+            return registered_domain_of(field)
     return ''
 
 
@@ -132,7 +132,7 @@ def _run_peacetime(detectors: list, log_generator, tunneling_domains: set) -> tu
         
         peace_logcount += 1
         
-        if domain and domain not in alldomains:
+        if domain:
             alldomains.add(domain)
 
         for detector in detectors:
@@ -196,7 +196,7 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
                 continue
 
 
-            if domain and domain not in alldomains:
+            if domain:
                 alldomains.add(domain)
 
             # Only update progress every 100 lines

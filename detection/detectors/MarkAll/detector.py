@@ -3,9 +3,6 @@ from detection.detector_base.feature_extraction import get_registered_domain
 
 class MarkAll(Detector):
 
-    def __init__(self):
-        super().__init__()
-
     def detect(self, logline: dict):
         domain = get_registered_domain(logline)
         if not domain:
