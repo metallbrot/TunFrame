@@ -100,7 +100,6 @@ services:
     volumes:
       - ./dnsexfiltrator-client/data:/data/
     build: ./dnsexfiltrator-client
-    # Idle container: main.py starts DNSExfiltrator.exe per config via docker exec in wartime
     init: true
     entrypoint: ["sleep", "infinity"]
     networks:
@@ -115,7 +114,6 @@ services:
     build: ./dnsexfiltrator-server
     volumes:
       - ./dnsexfiltrator-server/volume/:/app/
-    # Idle container: main.py starts dnsExfiltrator.py per config via docker exec in wartime
     init: true
     entrypoint: ["sleep", "infinity"]
     networks:
