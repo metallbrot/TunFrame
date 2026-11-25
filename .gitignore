@@ -10,7 +10,10 @@ docker/iodine*
 docker/dnsexfiltrator-client/data/*.csv
 docker/dnsexfiltrator-client/data/domains.txt
 docker/dnsexfiltrator-server/volume/test.zip
+docker/dnsexfiltrator-server/volume/outputfile*
 docker/dnsexfiltrator-server/volume/domains.txt
+docker/dnsexfiltrator-client/data/logs/
+docker/dnsexfiltrator-server/volume/logs/
 docker/dns-collector/logs/*
 pcaps/*
 experiments/
@@ -238,3 +241,4 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 allowlists/tranco.txt
+.DS_Store

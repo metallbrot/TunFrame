@@ -51,15 +51,11 @@ def generate_all_configs(tunneling_domains: list[str],
         output_dir: Base output directory
     """
 
-    tunnel_domain = tunneling_domains[0] if tunneling_domains else ""
-    tunnel_domain_tld = tunnel_domain.split(".")[-1] if "." in tunnel_domain else ""
-
     # --- validate-except block: only generated when domains are present ---
     if tunneling_domains:
         tunnel_domains_list = "; ".join(f'"{d}"' for d in tunneling_domains)
         validate_except_block = f"validate-except {{ {tunnel_domains_list}; }};"
     else:
-        tunnel_domains_list = ""
         validate_except_block = ""
         logger.warning("[!] No tunneling domains provided — validate-except block will be omitted")
 
@@ -95,9 +91,6 @@ def generate_all_configs(tunneling_domains: list[str],
         template_file=f"{template_dir}/tld.conf",
         output_file=f"{output_dir}/tld-simulator/config/named.conf",
         replacements={
-            "{TUNNEL_DOMAIN}": tunnel_domain,
-            "{TUNNEL_SERVER_IP}": tunnel_server_ip,
-            "{TUNNEL_DOMAINS}": tunnel_domains_list,
             "{ZONE_BLOCKS}": tld_zone_blocks,
             "{VALIDATE_EXCEPT_BLOCK}": validate_except_block,
         }
@@ -108,9 +101,6 @@ def generate_all_configs(tunneling_domains: list[str],
         template_file=f"{template_dir}/root.conf",
         output_file=f"{output_dir}/root-simulator/config/named.conf",
         replacements={
-            "{TUNNEL-DOMAIN-TLD}": tunnel_domain_tld,
-            "{TLD_SERVER_IP}": TLD_SERVER_IP,
-            "{TUNNEL_DOMAINS}": tunnel_domains_list,
             "{ZONE_BLOCKS}": root_zone_blocks,
             "{VALIDATE_EXCEPT_BLOCK}": validate_except_block,
         }
@@ -122,9 +112,6 @@ def generate_all_configs(tunneling_domains: list[str],
         output_file=f"{output_dir}/resolver/config/named.conf",
         replacements={
             "{PUBLIC_IP_RESOLVER}": public_resolver,
-            "{ROOT_SERVER_IP}": ROOT_SERVER_IP,
-            "{TUNNEL_DOMAIN}": tunnel_domain,
-            "{TUNNEL_DOMAINS}": tunnel_domains_list,
             "{ZONE_BLOCKS}": resolver_zone_blocks,
             "{VALIDATE_EXCEPT_BLOCK}": validate_except_block,
         }

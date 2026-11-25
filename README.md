@@ -150,7 +150,7 @@ Renamed keys abort the run with a hint (`timing.duration` → `timing.wartime_du
 
 | Parameter | Type | Required | Description | Default |
 |---|---|---|---|---|
-| `allowlist.global_allowlist_path` | path | No | Global allowlist (e.g. Tranco top-1M). Accepts one domain per line, CSV such as `rank,domain`, tab/space columns and `#` comments | none |
+| `allowlist.global_allowlist_path` | path | No | Global allowlist (e.g. Tranco top-1M). Accepts one domain per line, CSV such as `rank,domain`, tab/space columns and `#` comments. Entries are reduced to their registered domain (`ads.example.net` allowlists `example.net`) | none |
 
 ### Traffic Settings
 
@@ -178,7 +178,7 @@ Renamed keys abort the run with a hint (`timing.duration` → `timing.wartime_du
 | `traffic.tunnel.replay` | bool | No | Replay tunnel traffic from a PCAP (ignored when DNSExfiltrator is enabled) | `false` |
 | `traffic.tunnel.pcap` | string | If replay | Filename of the tunnel PCAP | — |
 | `traffic.tunnel.pps` | int | No | Replay rate in packets per second | original speed |
-| `traffic.tunnel.tunneling_domains` | list[string] | **Yes** | Domains routed to the tunnel server; ground truth for the evaluation | `[]` |
+| `traffic.tunnel.tunneling_domains` | list[string] | **Yes** | Domains routed to the tunnel server; their registered domains are the ground truth for the evaluation | `[]` |
 | `traffic.tunnel.tunnel_server_ip` | IP | No | Tunnel server IP, within `192.168.0.0/16` | `192.168.4.4` |
 | `traffic.tunnel.expansion_factor` | number | No | Encoding expansion factor of replayed tunnel traffic (replay mode only) | `1` |
 
@@ -251,5 +251,3 @@ Results are written to `output.logdir`, one JSON file per wartime window (per co
 - `metadata.complete_config`: the full `config.yaml`.
 - `metadata.dataset_statistics`: line, query and response counts of the window.
 - `detectors`: per-detector metrics. Confusion-matrix classes are domain-level over the registered domains seen in the window (TN excludes FN). Leakage volume (`traffic_volume_up_bytes`, `traffic_volume_down_bytes`) counts the query payload and the answer RDATA of tunneling traffic until the detector's first alarm; allowlisted tunneling traffic is reported separately (`allowlisted_tunnel_*`).
-
-Every metric definition change is listed in `BEHAVIOR_CHANGES.md`.
