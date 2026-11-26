@@ -46,12 +46,19 @@ def parse_mem_mb(text: str) -> float:
 
 
 def container_stats(names) -> dict:
-    """CPU percent and memory (MB) per container, from one ``docker stats`` call."""
+    """CPU percent and memory (MB) per container, from one ``docker stats`` call.
+
+    All running containers are queried and filtered by name: ``docker stats``
+    with explicit names fails as a whole (no output at all) as soon as one of
+    them does not exist, e.g. the DNSExfiltrator containers during peacetime
+    and the benign-only window. Containers that are not running are absent.
+    """
     if not names:
         return {}
+    wanted = set(names)
     try:
         result = subprocess.run(
-            ["docker", "stats", "--no-stream", "--format", "{{json .}}", *names],
+            ["docker", "stats", "--no-stream", "--format", "{{json .}}"],
             capture_output=True, text=True, timeout=15, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -61,6 +68,8 @@ def container_stats(names) -> dict:
         try:
             row = json.loads(line)
         except ValueError:
+            continue
+        if row.get("Name") not in wanted:
             continue
         try:
             cpu = float(str(row.get("CPUPerc", "0")).rstrip("%") or 0)
