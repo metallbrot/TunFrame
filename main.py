@@ -1653,10 +1653,14 @@ def run_wartime_phase(
             
             logger.info(f"\n[+] --- Running DNSExfiltrator configuration: {config_name} ({config_idx + 1}/{len(dnsexfil_configs)}) ---")
             set_phase("wartime", config_name)
+            parameters = {k: v for k, v in config.items() if k != 'name' and not k.startswith('_')}
+            # Show the factor actually used; None in the config means "derive from encoding".
+            factor = round(config_expansion_factor(config), 3)
+            parameters['expansion_factor'] = (factor if config.get('expansion_factor') is not None
+                                              else f"{factor:g} (from {config.get('encoding', '')})")
             REPORT.update(current={"name": config_name, "index": config_idx + 1, "total": len(dnsexfil_configs),
                                    "started": datetime.now().isoformat(timespec="seconds"), "window_started": None,
-                                   "parameters": {k: v for k, v in config.items()
-                                                  if k != 'name' and not k.startswith('_')}})
+                                   "parameters": parameters})
             
             # Use config domains as tunneling domains for this run
             config_tunneling_domains_set = {normalize_name(d) for d in domains} if domains else tunneling_domains_set
