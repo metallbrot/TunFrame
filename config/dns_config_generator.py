@@ -73,7 +73,8 @@ def generate_all_configs(tunneling_domains: list[str],
     Generate all DNS configs from templates
 
     Args:
-        tunneling_domains: List of tunnel domains, each an eTLD+1 (e.g., ["example.com"])
+        tunneling_domains: Domains routed to the tunnel server, each an eTLD+1
+            (e.g., ["example.com"]); main.py passes the DNSExfiltrator domains
         tunnel_server_ip: Tunnel/attacker server IP (e.g., "192.168.3.3")
         public_resolver: Public DNS resolver (e.g., "8.8.8.8")
         template_dir: Directory containing template files

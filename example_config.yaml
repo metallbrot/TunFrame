@@ -29,7 +29,7 @@ traffic:
     replay: false              # replay mode; ignored when dnsexfiltrator.enabled
     pcap: "tunneling.pcap"
     pps: 0
-    tunneling_domains: ["tunnel.com", "exfil-sync.net", "cdn-telemetry.org", "update-check.info"]
+    tunneling_domains: ["tunnel.com"]   # replay only: the tunnel domains in the pcap (ground truth)
     tunnel_server_ip: 192.168.4.4   # must be in 192.168.0.0/16
     expansion_factor: 1.6      # replay mode only
 
@@ -44,7 +44,7 @@ dnsexfiltrator:
     label_max_size: 63
     encoding: "base32"
     dilution: 0
-    domains: ["tunnel.com"]    # must be listed in traffic.tunnel.tunneling_domains
+    domains: ["tunnel.com"]    # routed to the tunnel server; eTLD+1 only
   sweeps:
     - name: "throttle_sweep"
       parameter: "throttle"

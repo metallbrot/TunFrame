@@ -105,9 +105,9 @@ except ValueError:
 check("C2 profiles inherit baseline; params validated", ok_inherit and ok_validate,
       "profile p=%s; typo rejected=%s" % ({k: p[k] for k in ('domains', 'throttle', 'label_max_size', 'encoding')}, ok_validate))
 
-# S1: domain_count sweeps take the first N domains of the sweep's pool (default: tunneling_domains).
-_ds = {'traffic': {'tunnel': {'tunneling_domains': ['a.com', 'b.net', 'c.org']}},
-       'dnsexfiltrator': {'enabled': True, 'baseline': {'domains': ['a.com']},
+# S1: domain_count sweeps take the first N domains of the sweep's pool (default: the baseline's domains).
+_ds = {'traffic': {'tunnel': {'tunneling_domains': ['x.org']}},   # replay-only: never a sweep pool
+       'dnsexfiltrator': {'enabled': True, 'baseline': {'domains': ['a.com', 'b.net', 'c.org']},
                           'sweeps': [{'name': 'dom', 'parameter': 'domain_count', 'values': [1, 3]},
                                      {'name': 'pool', 'parameter': 'domain_count', 'values': [2], 'domains': ['c.org', 'b.net', 'a.com']}]}}
 _dc = {c['name']: c for c in main.get_dnsexfiltrator_configs(_ds)}
@@ -116,7 +116,7 @@ try:
     _dc_bad = False
 except ValueError:
     _dc_bad = True
-check("S1 domain_count sweep uses the first N domains of its pool",
+check("S1 domain_count sweep uses the first N domains of its pool (default: baseline domains)",
       _dc['dom_domain_count_1']['domains'] == ['a.com'] and _dc['dom_domain_count_3']['domains'] == ['a.com', 'b.net', 'c.org']
       and _dc['pool_domain_count_2']['domains'] == ['c.org', 'b.net'] and _dc['dom_domain_count_3']['_value'] == 3 and _dc_bad,
       "dom_1=%s dom_3=%s pool_2=%s; count above the pool rejected=%s"
@@ -161,13 +161,22 @@ check("C4 results are self-contained", len(ri['git_commit']) == 40 and ri['libra
 check("C3 skipped configs leave a results file", d3['metadata']['run_status'] == {'status': 'skipped', 'reason': 'client failed'} and d3['detectors'] == [],
       "written %s with status %s" % (f3.name, d3['metadata']['run_status']['status']))
 
-try:
-    main.validate_dnsexfil_domains([{'name': 'a', 'domains': ['tunnel.com', 'other.net']}], ['tunnel.com'])
-    c5 = False
-except ValueError:
-    c5 = True
-main.validate_dnsexfil_domains([{'name': 'b', 'domains': ['Tunnel.com']}], ['tunnel.com'])   # must pass
-check("C5 unrouted exfil domains rejected", c5, "other.net outside tunneling_domains raised ValueError=%s" % c5)
+def _rejects(configs):
+    try:
+        main.validate_dnsexfil_domains(configs)
+        return False
+    except ValueError:
+        return True
+_routed = main.validate_dnsexfil_domains([{'name': 'a', 'domains': ['Tunnel.com', 'other.net']},
+                                          {'name': 'b', 'domains': ['other.net', 'third.org']}])
+c5 = (_rejects([{'name': 'a', 'domains': []}]) and _rejects([{'name': 'a', 'domains': ['sub.tunnel.com']}])
+      and _routed == ['tunnel.com', 'other.net', 'third.org'])
+_src_setup = open(os.path.join(ROOT, "main.py")).read()
+c5_gen = ("generate_all_configs(routed_domains," in _src_setup
+          and "if replay_active:\n        replay_domains = normalize_tunneling_domains(" in _src_setup)
+check("C5 DNSExfiltrator domains are routed; tunneling_domains only for the replay", c5 and c5_gen,
+      "routed=%s, empty/non-eTLD+1 rejected=%s, BIND gets routed_domains and replay domains are read only for the replay=%s"
+      % (_routed, c5, c5_gen))
 
 dets = [FlagTunnel()]
 cfg1 = [evt('x%d.tunnel.com' % i) for i in range(5)] + [evt('a.com')]

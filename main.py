@@ -981,7 +981,7 @@ DNSEXFIL_DEFAULTS = {
     'expansion_factor': None,  # None: derive from 'encoding'
 }
 # Sweep-only parameters that set real parameters. domain_count: the first N
-# domains of the sweep's ``domains`` pool (default: traffic.tunnel.tunneling_domains).
+# domains of the sweep's ``domains`` pool (default: the baseline's domains).
 VIRTUAL_SWEEP_PARAMETERS = ('domain_count',)
 
 
@@ -1038,38 +1038,38 @@ def resolve_results_dir(cfg: dict) -> Path:
     return logdir if logdir.is_absolute() else (CONFIG_PATH.parent / logdir).resolve()
 
 
-def validate_dnsexfil_domains(configs: list, tunneling_domains: list) -> None:
-    """Check that every DNSExfiltrator config only uses BIND-routed tunnel domains.
+def validate_dnsexfil_domains(configs: list) -> list:
+    """Check the domains of every DNSExfiltrator config; return all of them.
 
-    The BIND configs for resolver, root and TLD are generated once from
-    ``traffic.tunnel.tunneling_domains``. A domain outside that list would be
-    forwarded to the public resolver instead of the simulated hierarchy, while
-    the evaluation would still treat it as ground truth.
+    These domains (and only these) are routed to the tunnel server in the
+    BIND configs of resolver, root and TLD, and each configuration's domains
+    are its ground truth. ``traffic.tunnel.tunneling_domains`` is not used
+    here: it only declares the tunnel domains of the replayed pcap.
 
     Args:
         configs: Filled DNSExfiltrator configurations.
-        tunneling_domains: ``traffic.tunnel.tunneling_domains`` from the config.
+
+    Returns:
+        list: Every domain used by a configuration, normalised, in first-use order.
 
     Raises:
-        ValueError: If a config has no domains or uses a domain that is not in
-            ``traffic.tunnel.tunneling_domains``.
+        ValueError: If a config has no domains or a domain is not a registered
+            domain (eTLD+1).
     """
-    routed = {normalize_name(d) for d in (tunneling_domains or [])}
-    problems = []
+    routed, problems = [], []
     for config in configs:
         name = config.get('name', 'config')
-        domains = [normalize_name(d) for d in config.get('domains') or []]
+        try:
+            domains = normalize_tunneling_domains(config.get('domains') or [])
+        except ValueError as e:
+            problems.append(f"{name}: {e}")
+            continue
         if not domains:
             problems.append(f"{name}: no domains configured")
-            continue
-        missing = sorted(set(domains) - routed)
-        if missing:
-            problems.append(f"{name}: {missing} not in traffic.tunnel.tunneling_domains")
+        routed.extend(d for d in domains if d not in routed)
     if problems:
-        raise ValueError(
-            "DNSExfiltrator domains must be listed in traffic.tunnel.tunneling_domains "
-            f"(routed domains: {sorted(routed)}):\n  " + "\n  ".join(problems)
-        )
+        raise ValueError("Invalid DNSExfiltrator domains:\n  " + "\n  ".join(problems))
+    return routed
 
 
 def get_dnsexfiltrator_configs(cfg: dict):
@@ -1124,7 +1124,7 @@ def get_dnsexfiltrator_configs(cfg: dict):
                 f"Unknown sweep parameter '{parameter}' in sweep '{sweep_name}'. "
                 f"Valid parameters: {sorted(DNSEXFIL_DEFAULTS) + list(VIRTUAL_SWEEP_PARAMETERS)}"
             )
-        pool = list(sweep.get('domains') or cfg_safe_get(cfg, ['traffic', 'tunnel', 'tunneling_domains'], []) or [])
+        pool = list(sweep.get('domains') or base_cfg.get('domains') or [])
         for value in sweep.get('values', []):
             if parameter == 'domain_count':
                 if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= len(pool):
@@ -1193,8 +1193,22 @@ def run_setup(cfg: dict):
     else:
         peacetime_duration = float(peacetime_duration_config) * 60
 
+    # traffic.tunnel.tunneling_domains only declares the tunnel domains of the
+    # replayed pcap (its ground truth); it is read only when the replay runs
+    # (replay mode, i.e. traffic.tunnel.replay without DNSExfiltrator).
     # Fail fast (before DNS configs are generated) unless every entry is an eTLD+1.
-    tunneling_domains = normalize_tunneling_domains(cfg_safe_get(cfg, ["traffic", "tunnel", "tunneling_domains"], []))
+    replay_active = (bool(cfg_safe_get(cfg, ["traffic", "tunnel", "replay"], False))
+                     and not cfg_safe_get(cfg, ["dnsexfiltrator", "enabled"], False))
+    configured_replay_domains = cfg_safe_get(cfg, ["traffic", "tunnel", "tunneling_domains"], []) or []
+    if replay_active:
+        replay_domains = normalize_tunneling_domains(configured_replay_domains)
+        if not replay_domains:
+            raise ValueError("traffic.tunnel.replay needs traffic.tunnel.tunneling_domains "
+                             "(the tunnel domains in the replayed pcap)")
+    else:
+        replay_domains = []
+        if configured_replay_domains:
+            logger.info("[i] traffic.tunnel.tunneling_domains ignored: it is only used for the tunnel pcap replay")
     server_ip = cfg_safe_get(cfg, ['traffic', 'tunnel', 'tunnel_server_ip'], '192.168.4.4')
     public_resolver = cfg_safe_get(cfg, ['global', 'public_resolver'], '1.1.1.1')
     global_allowlist_path = cfg_safe_get(cfg, ['allowlist', 'global_allowlist_path'])
@@ -1209,7 +1223,11 @@ def run_setup(cfg: dict):
     benign_seconds = benign_window_duration(cfg)
     tunnel_windows = tunnel_windows_planned(cfg)
     dnsexfil_configs = get_dnsexfiltrator_configs(cfg)
-    validate_dnsexfil_domains(dnsexfil_configs, tunneling_domains)
+    # Only DNSExfiltrator domains are routed to the tunnel server (BIND configs).
+    routed_domains = validate_dnsexfil_domains(dnsexfil_configs)
+    # Every known tunnel domain: ground truth of the replay window, peacetime and
+    # benign-only warnings, tunnel marking in the live metrics.
+    tunneling_domains = replay_domains + [d for d in routed_domains if d not in replay_domains]
     if benign_seconds and any(c['name'] == BENIGN_WINDOW for c in dnsexfil_configs):
         raise ValueError(f"DNSExfiltrator configuration name '{BENIGN_WINDOW}' is reserved for the benign-only window")
     tunnel_names = [c['name'] for c in dnsexfil_configs] or (["wartime"] if tunnel_windows else [])
@@ -1267,7 +1285,7 @@ def run_setup(cfg: dict):
         LOGFILE.touch()
 
     write_docker_env(PROJECT_ROOT / (cfg_safe_get(cfg, ['traffic', 'pcap_path']) or './pcaps'))
-    generate_all_configs(tunneling_domains, server_ip, public_resolver, CONFIG_TEMPLATE_DIR, DOCKER_PATH)
+    generate_all_configs(routed_domains, server_ip, public_resolver, CONFIG_TEMPLATE_DIR, DOCKER_PATH)
     
     logger.info("[+] Starting docker compose")
     compose_up("essential")
@@ -1858,8 +1876,8 @@ def run_wartime_phase(
                                    "started": datetime.now().isoformat(timespec="seconds"), "window_started": None,
                                    "parameters": parameters})
             
-            # Use config domains as tunneling domains for this run
-            config_tunneling_domains_set = {normalize_name(d) for d in domains} if domains else tunneling_domains_set
+            # The configuration's own domains are its ground truth (validated non-empty at setup)
+            config_tunneling_domains_set = {normalize_name(d) for d in domains}
             
             # Update domain file for this configuration (single file)
             domains_file = server_volume_dir / "domains.txt"

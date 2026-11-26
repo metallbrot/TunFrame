@@ -83,7 +83,7 @@ TunFrame/
 
 ![TunFrame Architecture](./documentation/docker_architecture.png)
 
-TunFrame runs an isolated DNS environment in Docker: a BIND resolver, a simulated root and TLD server that route the configured tunneling domains to the tunnel server, DNS-collector (which logs every query and response the resolver sees as JSON lines), and a tcpreplay container.
+TunFrame runs an isolated DNS environment in Docker: a BIND resolver, a simulated root and TLD server that route the DNSExfiltrator domains to the tunnel server, DNS-collector (which logs every query and response the resolver sees as JSON lines), and a tcpreplay container.
 
 A run has these steps:
 
@@ -119,9 +119,7 @@ Only `Detector` subclasses defined in `detector.py` are loaded. Select detectors
 2. Add both containers to `docker/docker-compose.yml`, connecting them to the appropriate networks:
    - Client → `client-network`
    - Server → `server-network`
-3. In `config.yaml`, set:
-   - `traffic.tunnel.tunneling_domains` – domain(s) the tool uses
-   - `traffic.tunnel.tunnel_server_ip` – IP of the tunnel server (must be in `192.168.0.0/16` and match the server's IP in step 2)
+3. Integrate it in `main.py` the way DNSExfiltrator is: the BIND configs route only the domains passed to `generate_all_configs` (today the DNSExfiltrator domains) to `traffic.tunnel.tunnel_server_ip` (must be in `192.168.0.0/16` and match the server's IP in step 2), and each window needs the tool's domains as its ground truth. `traffic.tunnel.tunneling_domains` is not used for this; it only declares the domains of a replayed pcap.
 
 Pre-recorded tunnel traffic can be used without a container through replay mode.
 
@@ -187,7 +185,7 @@ Renamed keys abort the run with a hint (`timing.duration` → `timing.wartime_du
 | `traffic.tunnel.replay` | bool | No | Replay tunnel traffic from a PCAP (ignored when DNSExfiltrator is enabled) | `false` |
 | `traffic.tunnel.pcap` | string | If replay | Filename of the tunnel PCAP | — |
 | `traffic.tunnel.pps` | int | No | Replay rate in packets per second | original speed |
-| `traffic.tunnel.tunneling_domains` | list[string] | **Yes** (optional in a benign-only run) | Domains routed to the tunnel server and used as ground truth for the evaluation. Each entry must be a registered domain (eTLD+1 per the ICANN section of the Public Suffix List; private suffixes such as `duckdns.org` are not suffixes), e.g. `example.co.uk`, not `tunnel.example.co.uk`; otherwise the run aborts. Must not appear in the global allowlist | `[]` |
+| `traffic.tunnel.tunneling_domains` | list[string] | If replay | The tunnel domains in the replayed pcap: ground truth of the replay window. Read only when the replay runs (`traffic.tunnel.replay` without DNSExfiltrator), otherwise ignored; never used for the resolver configuration. Each entry must be a registered domain (eTLD+1 per the ICANN section of the Public Suffix List; private suffixes such as `duckdns.org` are not suffixes), e.g. `example.co.uk`, not `tunnel.example.co.uk`; otherwise the run aborts. Must not appear in the global allowlist | `[]` |
 | `traffic.tunnel.tunnel_server_ip` | IP | No | Tunnel server IP, within `192.168.0.0/16` | `192.168.4.4` |
 | `traffic.tunnel.expansion_factor` | number | No | Encoding expansion factor of replayed tunnel traffic (replay mode only) | `1` |
 
@@ -198,10 +196,10 @@ Renamed keys abort the run with a hint (`timing.duration` → `timing.wartime_du
 | `dnsexfiltrator.enabled` | bool | No | Generate live tunnel traffic with DNSExfiltrator | `false` |
 | `dnsexfiltrator.stop_on_transfer_complete` | bool | No | End a wartime window once the server reports the file as saved (`timing.wartime_duration` stays the upper bound) | `true` |
 | `dnsexfiltrator.baseline` | mapping | No | Baseline configuration (named `baseline`) | defaults below |
-| `dnsexfiltrator.sweeps` | list | No | `{name, parameter, values}`: one configuration per value, based on the baseline. `parameter: domain_count` spreads the transfer over the first N domains of the sweep's `domains` pool (default: `traffic.tunnel.tunneling_domains`; every pool domain must be listed there) | `[]` |
+| `dnsexfiltrator.sweeps` | list | No | `{name, parameter, values}`: one configuration per value, based on the baseline. `parameter: domain_count` spreads the transfer over the first N domains of the sweep's `domains` pool (default: the baseline's `domains`) | `[]` |
 | `dnsexfiltrator.profiles` | list | No | Named configurations; unset values come from the baseline (the name `benign_only` is reserved when the benign-only window is enabled) | `[]` |
 
-Valid parameters and their defaults: `file` (`/data/synthetic_cc_data_100.csv`), `password` (`tunframe`), `throttle` (`10`), `throttle_random` (`0`), `label_max_size` (`63`), `encoding` (`base32`; also `base32map`, `base64`, `hex`), `dilution` (`0`), `domains` (`[]`), `expansion_factor` (derived from `encoding`: 1.6, 4.8, 4/3, 2.0; only used when the net volume cannot be decoded, see below). Unknown parameter names abort the run. Every domain in `domains` must also be listed in `traffic.tunnel.tunneling_domains`.
+Valid parameters and their defaults: `file` (`/data/synthetic_cc_data_100.csv`), `password` (`tunframe`), `throttle` (`10`), `throttle_random` (`0`), `label_max_size` (`63`), `encoding` (`base32`; also `base32map`, `base64`, `hex`), `dilution` (`0`), `domains` (`[]`), `expansion_factor` (derived from `encoding`: 1.6, 4.8, 4/3, 2.0; only used when the net volume cannot be decoded, see below). Unknown parameter names abort the run. Every configuration needs at least one domain, each a registered domain (eTLD+1). The domains of all configurations are routed to the tunnel server in the BIND configs of resolver, root and TLD, and each configuration's domains are its ground truth.
 
 ### Output Settings
 
@@ -260,7 +258,6 @@ traffic:
     pps: 20
   tunnel:
     replay: false              # no tunnel source: the run ends after the benign-only window
-    tunneling_domains: ["tunnel.com"]
 
 dnsexfiltrator:
   enabled: false
