@@ -286,8 +286,15 @@ from detection.detector_base.feature_extraction import get_txt_content
 from detection.detector_base.metrics import true_positive_rate, false_positive_rate
 txt = get_txt_content(resp('a.tunnel.com', [{"rdatatype": "TXT", "rdata": "ND"}, {"rdatatype": "A", "rdata": "1.2.3.4"}]))
 check("F1 TXT content uses collector schema", txt == ["ND"], "got %s (expected ['ND'])" % txt)
-gt = main.ground_truth_domain('Tunnel.Example.com.')
-check("F2 ground truth at registered-domain level", gt == 'example.com', "tunnel.example.com -> %s (expected example.com)" % gt)
+from detection.detector_base.feature_extraction import normalize_tunneling_domains
+gt = normalize_tunneling_domains(['Example.COM.', 'example.com'])
+try:
+    normalize_tunneling_domains(['tunnel.example.com'])
+    f2_reject = False
+except ValueError:
+    f2_reject = True
+check("F2 ground truth at registered-domain level", gt == ['example.com'] and f2_reject,
+      "Example.COM. -> %s (expected ['example.com']), tunnel.example.com rejected=%s" % (gt, f2_reject))
 check("F3 rates guard the denominator", (true_positive_rate(0, 0), false_positive_rate(0, 4), true_positive_rate(1, 1)) == (0, 0.0, 0.5),
       "tpr(0,0), fpr(0,4), tpr(1,1) = %s" % ((true_positive_rate(0, 0), false_positive_rate(0, 4), true_positive_rate(1, 1)),))
 _war = src_w[src_w.index("def run_wartime_phase("):]
@@ -321,7 +328,7 @@ except AttributeError:
     d5 = False
 dl = FlagTunnel()
 ev.wartime_stop_event.clear()
-o6 = ev.run_wartime([dl], gen([evt('AbC.TuNnEl.CoM')]), {main.normalize_domain('Tunnel.COM.')}, set())
+o6 = ev.run_wartime([dl], gen([evt('AbC.TuNnEl.CoM')]), {main.normalize_name('Tunnel.COM.')}, set())
 check("D6 case-insensitive ground truth and alarms", o6[0][0]['tp'] == 1 and o6[2] == 1, "mixed-case query vs mixed-case config: tp=%d tunnel_lines=%d" % (o6[0][0]['tp'], o6[2]))
 loaded = ev.load_detectors(os.path.join(ROOT, "detection", "detectors"), ["MarkAll"])
 try:

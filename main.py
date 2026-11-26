@@ -22,7 +22,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from detection.evaluate import load_detectors, run_peacetime, run_wartime, generate_allowlists, save_results, load_global_allowlist, wartime_stop_event, transfer_complete_event, request_wartime_stop, reset_wartime_stop, peacetime_stop_event, peacetime_done, cfg_safe_get, format_duration
 from detection.detector_base.readfile import readjson, log_end_offset
-from detection.detector_base.feature_extraction import normalize_domain, get_registered_domain, registered_domain_of
+from detection.detector_base.feature_extraction import normalize_name, normalize_tunneling_domains, get_registered_domain
 from config.dns_config_generator import generate_all_configs, BIND_SERVERS, RNDC_CONTAINER_KEY_PATH
 from detection.reporting import RunReport, ReportLogHandler
 from detection.monitoring import MetricsSampler, ControlWatcher
@@ -281,16 +281,6 @@ def tunnel_traffic_seen(start_offset: int, tunneling_domains: set, settle_second
         if time.monotonic() >= deadline:
             return False
         time.sleep(0.2)
-
-
-def ground_truth_domain(domain) -> str:
-    """Return the registered domain of a configured tunneling domain.
-
-    Detectors alarm on registered domains, so ground truth must use the same
-    granularity; a configured ``tunnel.example.com`` becomes ``example.com``.
-    Names without a known public suffix are kept as they are.
-    """
-    return registered_domain_of(domain) or normalize_domain(domain)
 
 
 def replay_fire_and_forget(pcap: str, pps: int, label: str):
@@ -920,7 +910,7 @@ USER_END_REASONS = {"user_skip": "skipped from the dashboard", "user_stop": "run
 def start_monitoring(tunneling_domains) -> None:
     """Start the metrics sampler and the dashboard control watcher for the run."""
     stop_monitoring()
-    sampler = MetricsSampler(REPORT, LOGFILE, {ground_truth_domain(d) for d in tunneling_domains},
+    sampler = MetricsSampler(REPORT, LOGFILE, {normalize_name(d) for d in tunneling_domains},
                              MONITORED_CONTAINERS).start()
     MONITORS[:] = [sampler, ControlWatcher(REPORT, RUN_CONTROL.handle).start()]
 
@@ -1023,11 +1013,11 @@ def validate_dnsexfil_domains(configs: list, tunneling_domains: list) -> None:
         ValueError: If a config has no domains or uses a domain that is not in
             ``traffic.tunnel.tunneling_domains``.
     """
-    routed = {str(d).strip().rstrip('.').lower() for d in (tunneling_domains or [])}
+    routed = {normalize_name(d) for d in (tunneling_domains or [])}
     problems = []
     for config in configs:
         name = config.get('name', 'config')
-        domains = [str(d).strip().rstrip('.').lower() for d in config.get('domains') or []]
+        domains = [normalize_name(d) for d in config.get('domains') or []]
         if not domains:
             problems.append(f"{name}: no domains configured")
             continue
@@ -1162,7 +1152,8 @@ def run_setup(cfg: dict):
     else:
         peacetime_duration = float(peacetime_duration_config) * 60
 
-    tunneling_domains = cfg_safe_get(cfg, ["traffic", "tunnel", "tunneling_domains"], [])
+    # Fail fast (before DNS configs are generated) unless every entry is an eTLD+1.
+    tunneling_domains = normalize_tunneling_domains(cfg_safe_get(cfg, ["traffic", "tunnel", "tunneling_domains"], []))
     server_ip = cfg_safe_get(cfg, ['traffic', 'tunnel', 'tunnel_server_ip'], '192.168.4.4')
     public_resolver = cfg_safe_get(cfg, ['global', 'public_resolver'], '1.1.1.1')
     global_allowlist_path = cfg_safe_get(cfg, ['allowlist', 'global_allowlist_path'])
@@ -1668,7 +1659,7 @@ def run_wartime_phase(
                                                   if k != 'name' and not k.startswith('_')}})
             
             # Use config domains as tunneling domains for this run
-            config_tunneling_domains_set = {ground_truth_domain(d) for d in domains} if domains else tunneling_domains_set
+            config_tunneling_domains_set = {normalize_name(d) for d in domains} if domains else tunneling_domains_set
             
             # Update domain file for this configuration (single file)
             domains_file = server_volume_dir / "domains.txt"
@@ -2179,7 +2170,7 @@ def main():
             dnsexfil_configs
         ) = run_setup(cfg)
         
-        tunneling_domains_set = {ground_truth_domain(d) for d in tunneling_domains}
+        tunneling_domains_set = {normalize_name(d) for d in tunneling_domains}
         
         # Create log generator
         log_generator = readjson(str(LOGFILE), start_offset=log_end_offset(LOGFILE))

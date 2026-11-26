@@ -1,36 +1,17 @@
 import os
-import re
 import importlib
 import inspect
 import threading
 import logging
 from detection.detector_base.readfile import log_end_offset
 from detection.detector_base.feature_extraction import (
-    get_registered_domain, registered_domain_of, is_response, get_fqdn, validate_fqdn,
+    get_registered_domain, load_domain_list, is_response, get_fqdn, validate_fqdn,
     query_payload_bytes, answer_payload_bytes,
 )
 import json
 
 # Get the logger configured in main.py
 logger = logging.getLogger('dns_detector')
-
-
-def parse_allowlist_line(line: str) -> str:
-    """Extract the domain from one allowlist line, or return '' if there is none.
-
-    Supported formats: one domain per line, CSV such as Tranco's
-    ``rank,domain``, tab- or space-separated columns (hosts-file style), and
-    ``#`` comments. The last column that looks like a domain is used and
-    reduced to its registered domain, the granularity detectors alarm on.
-    """
-    line = line.split('#', 1)[0].strip()
-    if not line:
-        return ''
-    fields = [f.strip().strip('"\'') for f in re.split(r'[,;\t ]+', line) if f.strip()]
-    for field in reversed(fields):
-        if '.' in field and not field.replace('.', '').isdigit():
-            return registered_domain_of(field)
-    return ''
 
 
 def load_global_allowlist(allowlist_path: str, base_dir=None) -> set:
@@ -43,24 +24,19 @@ def load_global_allowlist(allowlist_path: str, base_dir=None) -> set:
             resolved against it instead of the working directory.
 
     Returns:
-        set: Lowercased registered domains.
+        set: Registered domains (eTLD+1), see ``load_domain_list()``.
 
     Raises:
         FileNotFoundError: If the configured file does not exist.
     """
-    global_allowlist = set()
     if not allowlist_path:
-        return global_allowlist
+        return set()
     path = allowlist_path
     if base_dir is not None and not os.path.isabs(path):
         path = os.path.join(str(base_dir), path)
     if not os.path.isfile(path):
         raise FileNotFoundError(f"Global allowlist not found: {path}")
-    with open(path, 'r', encoding='utf-8', errors='replace') as file:
-        for line in file:
-            domain = parse_allowlist_line(line)
-            if domain:
-                global_allowlist.add(domain)
+    global_allowlist = load_domain_list(path)
     logger.info(f"[+] Global allowlist: {len(global_allowlist)} domains from {path}")
     return global_allowlist
 

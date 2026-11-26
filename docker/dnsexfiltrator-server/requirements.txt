@@ -1,2 +1,4 @@
 dnslib==0.9.26
-tldextract
+# Pinned: the bundled Public Suffix List snapshot of this version defines the eTLD+1 keys
+# (keep in sync with the top-level requirements.txt).
+tldextract==5.4.0

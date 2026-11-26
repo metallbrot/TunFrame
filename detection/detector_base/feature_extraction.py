@@ -1,4 +1,5 @@
 import math
+import re
 from collections import Counter
 from typing import Dict
 import tldextract
@@ -27,24 +28,113 @@ def get_fqdn(event: Dict) -> str:
     fqdn = json_safe_get(event, "dns.qname")
     return fqdn
 
-def normalize_domain(domain) -> str:
-    """Return a domain in the canonical form used everywhere in TunFrame.
+# Single source of truth for the eTLD+1 aggregation key. Offline (bundled PSL
+# snapshot of the pinned tldextract version, no fetch, no cache) so results are
+# reproducible; ICANN section only, private suffixes such as duckdns.org or
+# github.io are NOT treated as public suffixes.
+# Keep in sync with PSL_EXTRACT in docker/dnsexfiltrator-server/volume/dnsExfiltrator.py.
+_EXTRACT = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None, include_psl_private_domains=False)
+
+
+def normalize_name(name) -> str:
+    """Return a DNS name in the canonical form used everywhere in TunFrame.
 
     Lowercase, surrounding whitespace and a trailing dot removed. DNS names are
     case-insensitive, so ground truth, alarms and allowlists all compare this
-    form.
+    form. ``None`` and non-strings become ``""``.
     """
-    return str(domain or "").strip().rstrip(".").lower()
+    if not isinstance(name, str):
+        return ""
+    return name.strip().rstrip('.').lower()
 
 
-def registered_domain_of(name) -> str:
-    """Return the normalized registered domain of a domain name ('' if none)."""
-    return normalize_domain(tldextract.extract(normalize_domain(name)).top_domain_under_public_suffix)
+def registered_domain(name) -> str:
+    """Return the registered domain (eTLD+1, ICANN PSL) of a name, or ``""``.
+
+    Example: ``A.b.Example.CO.uk.`` -> ``example.co.uk``. Names without a
+    registrable part (``localhost``, a bare suffix) return ``""``.
+    """
+    ext = _EXTRACT(normalize_name(name))
+    if not ext.domain or not ext.suffix:
+        return ""
+    return f"{ext.domain}.{ext.suffix}"
+
+
+def subdomain_labels(name) -> list:
+    """Return the labels left of the registered domain (``[]`` if there are none).
+
+    Unlike the aggregation key, the labels keep their case: they carry the
+    (possibly case-sensitive) payload, and features such as entropy use them.
+    """
+    if not isinstance(name, str):
+        return []
+    ext = _EXTRACT(name.strip().rstrip('.'))
+    if not ext.domain or not ext.suffix or not ext.subdomain:
+        return []
+    return ext.subdomain.split('.')
+
+
+def normalize_tunneling_domains(domains) -> list:
+    """Normalise and validate ``traffic.tunnel.tunneling_domains``.
+
+    Every entry must already be a registered domain (eTLD+1), because that is
+    the granularity detectors alarm on and the ground truth is compared at.
+
+    Returns:
+        list: Normalised domains, deduplicated, in configured order.
+
+    Raises:
+        ValueError: If an entry has no valid public suffix or is not an eTLD+1.
+    """
+    result = []
+    for entry in domains or []:
+        name = normalize_name(entry)
+        if not _EXTRACT(name).suffix:
+            raise ValueError(f"Tunneling domain '{entry}' has no valid public suffix (ICANN PSL).")
+        registered = registered_domain(name)
+        if registered != name:
+            raise ValueError(f"Tunneling domain '{entry}' is not a registered domain (eTLD+1). "
+                             f"Use '{registered}' instead.")
+        if name not in result:
+            result.append(name)
+    return result
+
+
+def _domain_list_entry(line: str) -> str:
+    """Return the eTLD+1 of one domain-list line, or ``""`` if there is none.
+
+    Supported formats: one domain per line, CSV such as Tranco's
+    ``rank,domain``, tab- or space-separated columns (hosts-file style), and
+    ``#`` comments. The last column that looks like a domain is used.
+    """
+    line = line.split('#', 1)[0].strip()
+    if not line:
+        return ""
+    fields = [f.strip().strip('"\'') for f in re.split(r'[,;\t ]+', line) if f.strip()]
+    for field in reversed(fields):
+        if '.' in field and not field.replace('.', '').isdigit():
+            return registered_domain(field)
+    return ""
+
+
+def load_domain_list(path) -> set:
+    """Load a domain list (e.g. Tranco top-1M) as a set of eTLD+1 keys.
+
+    Empty lines and ``#`` comments are skipped; entries without a registered
+    domain are dropped. See ``_domain_list_entry()`` for the line formats.
+    """
+    domains = set()
+    with open(path, 'r', encoding='utf-8', errors='replace') as file:
+        for line in file:
+            key = _domain_list_entry(line)
+            if key:
+                domains.add(key)
+    return domains
 
 
 def get_registered_domain(event: Dict) -> str:
-    """Return the normalized (lowercase) registered domain of the query name."""
-    return registered_domain_of(get_fqdn(event))
+    """Return the registered domain (eTLD+1) of the query name, or ``""``."""
+    return registered_domain(get_fqdn(event))
 
 def longest_common_substring(s1: str, s2: str) -> int:
     """
@@ -89,16 +179,9 @@ def longest_common_subsequence(s1: str, s2: str) -> int:
 def extract_subdomain_string(event: dict) -> str:
     """
     Extract the subdomain portion of the FQDN (excluding registered domain).
-    Example: 'paaanfty.tunnel.com' -> 'paaanfty'
+    Example: 'paaanfty.tunnel.com' -> 'paaanfty'; 'tunnel.com' -> ''
     """
-    fqdn = get_fqdn(event)
-    extracted = tldextract.extract(fqdn)
-    subdomain = extracted.subdomain
-    domain = extracted.domain
-    
-    if subdomain:
-        return subdomain
-    return domain
+    return '.'.join(subdomain_labels(get_fqdn(event)))
 
 
 def query_payload_bytes(event: Dict) -> int:
@@ -114,11 +197,7 @@ def query_payload_bytes(event: Dict) -> int:
     Returns:
         int: Payload size in bytes.
     """
-    fqdn = get_fqdn(event)
-    if not fqdn:
-        return 0
-    subdomain = tldextract.extract(fqdn).subdomain
-    return sum(len(label.encode("utf-8")) for label in subdomain.split(".") if label)
+    return sum(len(label.encode("utf-8")) for label in subdomain_labels(get_fqdn(event)) if label)
 
 
 # RDATA wire sizes of fixed-size record types, in bytes.

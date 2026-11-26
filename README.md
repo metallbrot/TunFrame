@@ -183,7 +183,7 @@ Renamed keys abort the run with a hint (`timing.duration` → `timing.wartime_du
 | `traffic.tunnel.replay` | bool | No | Replay tunnel traffic from a PCAP (ignored when DNSExfiltrator is enabled) | `false` |
 | `traffic.tunnel.pcap` | string | If replay | Filename of the tunnel PCAP | — |
 | `traffic.tunnel.pps` | int | No | Replay rate in packets per second | original speed |
-| `traffic.tunnel.tunneling_domains` | list[string] | **Yes** | Domains routed to the tunnel server; their registered domains are the ground truth for the evaluation | `[]` |
+| `traffic.tunnel.tunneling_domains` | list[string] | **Yes** | Domains routed to the tunnel server and used as ground truth for the evaluation. Each entry must be a registered domain (eTLD+1 per the ICANN section of the Public Suffix List; private suffixes such as `duckdns.org` are not suffixes), e.g. `example.co.uk`, not `tunnel.example.co.uk`; otherwise the run aborts. Must not appear in the global allowlist | `[]` |
 | `traffic.tunnel.tunnel_server_ip` | IP | No | Tunnel server IP, within `192.168.0.0/16` | `192.168.4.4` |
 | `traffic.tunnel.expansion_factor` | number | No | Encoding expansion factor of replayed tunnel traffic (replay mode only) | `1` |
 

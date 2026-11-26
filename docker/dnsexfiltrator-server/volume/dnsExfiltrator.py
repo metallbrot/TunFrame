@@ -13,6 +13,7 @@ import zipfile
 import random
 import traceback
 import tldextract
+PSL_EXTRACT = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None, include_psl_private_domains=False)  # keep in sync with feature_extraction._EXTRACT
 
 # ======================================================================================================
 # RC4 CLASS (with state maintained between calls)
@@ -142,7 +143,7 @@ if __name__ == '__main__':
 
     domains = []
     with open(args.domainFile, 'r') as f:
-        domains = [line.strip() for line in f if line.strip()]
+        domains = [line.strip().rstrip('.').lower() for line in f if line.strip()]
 
     print(color("[*] DNS Exfiltration Server"))
     print(color("[*] Listening on port 53"))
@@ -183,12 +184,14 @@ if __name__ == '__main__':
 
             if request.q.qtype == 1:
                 qname = str(request.q.qname)
-                extracted = tldextract.extract(qname.rstrip('.'))
+                # Case is kept in the labels (payload); only the eTLD+1 key is lowercased.
+                extracted = PSL_EXTRACT(qname.rstrip('.'))
+                registered = f"{extracted.domain}.{extracted.suffix}".lower() if extracted.domain and extracted.suffix else ""
                 subdomain = extracted.subdomain
                 labels = subdomain.split('.') if subdomain else []
 
-                if extracted.top_domain_under_registry_suffix not in domains:
-                    print(color(f'[!] Domain {extracted.top_domain_under_registry_suffix} not in allowed list, ignoring'))
+                if registered not in domains:
+                    print(color(f'[!] Domain {registered} not in allowed list, ignoring'))
                     continue
 
                 # INIT message - single label
