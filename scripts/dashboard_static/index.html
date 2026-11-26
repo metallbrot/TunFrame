@@ -32,13 +32,6 @@
     <div class="kpi"><div class="kpi-label">DNS queries / s</div><div class="kpi-value mono" id="k-qps">–</div><div class="kpi-sub" id="k-qps-sub"></div></div>
   </section>
 
-  <section class="card callout span-12" id="benign-card" aria-labelledby="h-benign" hidden>
-    <h2 id="h-benign">Benign-only baseline <span class="muted small">false positive rate without adversarial load · benign and wildcard traffic only, so every alarm is a false positive</span></h2>
-    <div class="mini-kpis" id="benign-kpis"></div>
-    <div id="benign-note" class="note" hidden></div>
-    <div class="table-wrap"><table id="benign-table"></table></div>
-  </section>
-
   <section class="card span-4" aria-labelledby="h-current">
     <h2 id="h-current">Current configuration</h2>
     <div id="current"></div>
@@ -85,7 +78,16 @@
   </section>
 
   <section class="card span-12" id="detectors-card" aria-labelledby="h-detectors">
-    <h2 id="h-detectors">Detectors <span class="muted small">means over the finished configurations · click a column to sort, a row to select</span></h2>
+    <h2 id="h-detectors">Detectors <span class="muted small" id="det-sub">means over the finished configurations · click a column to sort, a row to select</span>
+      <span class="spacer"></span>
+      <span role="group" aria-label="Ranking" id="det-mode" class="seg" hidden>
+        <button data-mode="wartime" aria-pressed="true">Wartime</button><button data-mode="benign" aria-pressed="false">Benign-only</button></span></h2>
+    <div id="rank-benign" hidden>
+      <div class="mini-kpis" id="benign-kpis"></div>
+      <div id="benign-note" class="note" hidden></div>
+      <div class="table-wrap"><table id="benign-table"></table></div>
+    </div>
+    <div id="rank-wartime">
     <div class="table-wrap"><table id="leaderboard" class="clickable"></table></div>
     <div id="detector-view" class="detector-view">
       <div class="det-head"><span id="det-name" class="cur-name"></span>
@@ -98,6 +100,12 @@
       <h3>Per configuration</h3>
       <div class="table-wrap"><table id="det-table"></table></div>
     </div>
+    </div>
+  </section>
+
+  <section class="card span-12" id="configrank-card" aria-labelledby="h-configrank">
+    <h2 id="h-configrank">Configuration ranking <span class="muted small">which configuration exfiltrated the most data across all detectors · click a column to sort (first click: most evasive first)</span></h2>
+    <div class="table-wrap"><table id="config-rank"></table></div>
   </section>
 
   <section class="card span-6" id="tradeoff-card" aria-labelledby="h-tradeoff">

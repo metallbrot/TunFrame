@@ -18,6 +18,33 @@ const METRICS = [
   {key: "traffic_volume_up_bytes", label: "Leak up", lower: true, fmt: TF.fmtBytes, cell: TF.fmtBytes, axis: TF.fmtBytes},
   {key: "runtime", label: "Runtime", lower: true, fmt: v => `${v.toFixed(1)} s`, cell: v => `${v.toFixed(1)}s`},
 ];
+// Benign-only ranking columns (benign-only window: every alarm is a false positive). "tunnel":
+// needs finished tunnel configurations. tunnel_fpr: mean FPR over them; change: tunnel minus benign.
+const BENIGN_COLUMNS = [
+  {key: "fpr", label: "FPR benign-only", fmt: v => fmtFpr(v), lower: true, meter: true},
+  {key: "tunnel_fpr", label: "FPR with tunnel", fmt: v => fmtFpr(v), lower: true, tunnel: true,
+   title: "mean FPR over the finished tunnel configurations"},
+  {key: "change", label: "Change", fmt: v => (v > 0 ? "+" : "") + fmtFpr(v), lower: true, tunnel: true,
+   title: "FPR with tunnel minus FPR benign-only"},
+  {key: "fp", label: "FP domains", fmt: String, lower: true, title: "falsely flagged registered domains"},
+  {key: "tn", label: "TN domains", fmt: String, title: "registered domains without an alarm"},
+  {key: "fp_domains_per_hour", label: "FP / h", fmt: v => v.toFixed(1), lower: true, title: "falsely flagged domains per hour of the window"},
+  {key: "allowlist_size", label: "Allowlist", fmt: v => TF.fmtCompact(v), title: "detector allowlist: peacetime alarms plus the global allowlist"},
+];
+// Configuration ranking columns: each finished tunnel configuration over all detectors.
+// evasive: the sort direction that puts the most evasive configuration first (first click).
+const CONFIG_COLUMNS = [
+  {key: "mean_ulv", label: "Mean ULV %", fmt: pct, evasive: "desc", meter: 100,
+   title: "share of the file that left before the alarm, mean over the detectors"},
+  {key: "min_ulv", label: "Min ULV %", fmt: pct, evasive: "desc", title: "share that left even before the best detector's alarm"},
+  {key: "mean_net", label: "Mean net leak", fmt: v => TF.fmtBytes(v), evasive: "desc",
+   title: "file bytes before the alarm, mean over the detectors (DNSExfiltrator mode)"},
+  {key: "file", label: "File", fmt: v => TF.fmtBytes(v), evasive: "desc", title: "file size the tool announced"},
+  {key: "detected", label: "Detected by", evasive: "asc", title: "detectors that flagged a tunneling domain"},
+  {key: "mean_f1", label: "Mean F1", fmt: v => v.toFixed(3), evasive: "asc"},
+  {key: "tunnel_queries", label: "Tunnel q.", fmt: v => TF.fmtCompact(v), evasive: "desc"},
+  {key: "duration", label: "Window", fmt: v => TF.fmtDuration(v), evasive: "desc", title: "length of the configuration's window"},
+];
 // Detector ranking columns: exfiltration volume first, then detection quality.
 const RANK_COLUMNS = [
   {key: "ulv_percent", label: "ULV %", fmt: pct, lower: true, meter: 100},
@@ -46,6 +73,9 @@ const state = {
   log: {tab: "run", runId: null, configKey: null, offsets: {run: -1, server: -1, client: -1}, text: {run: "", server: "", client: ""}},
   metric: METRICS[0], heatMetric: METRICS[0], sweepMetric: METRICS[0], detector: null, sweep: null,
   rankSort: {key: "ulv_percent", dir: "asc"},
+  // Detectors card: "wartime" / "benign" ranking; null = automatic (benign until a tunnel configuration finished)
+  detMode: null, benignSort: {key: "fpr", dir: "asc"},
+  configSort: {key: "mean_ulv", dir: "desc"},   // configuration ranking: most exfiltrated first
   showTable: false, lastControlId: null, timer: null,
   followLatest: true,   // switch to a newly started run unless an older run was picked
 };
@@ -356,7 +386,7 @@ function renderResources() {
 }
 
 // Finished tunnel configurations in group order, with the group boundaries (null for one
-// group). The benign-only window is left out (see renderBenign).
+// group). The benign-only window is left out (see renderBenignRanking).
 function finishedConfigs(run) {
   const finished = new Map((run.configs || []).filter(c => (c.detectors || []).length && c.name !== BENIGN).map(c => [c.name, c]));
   const configs = [], sections = [];
@@ -403,7 +433,23 @@ function renderHeat() {
   });
 }
 
+// Detectors card: the wartime ranking (tunnel configurations) or, for runs with a
+// benign-only window, the benign-only ranking; a benign-only run has only the latter.
 function renderDetectors() {
+  const run = state.run, hasB = hasBenignWindow(run), only = isBenignOnly(run);
+  const mode = only ? "benign" : !hasB ? "wartime"
+    : state.detMode ?? (finishedConfigs(run).configs.length ? "wartime" : "benign");
+  $("det-mode").hidden = !hasB || only;
+  $("det-mode").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.mode === mode));
+  $("rank-benign").hidden = mode !== "benign";
+  $("rank-wartime").hidden = mode !== "wartime";
+  $("det-sub").textContent = mode === "benign"
+    ? "benign-only window · false positive rate without adversarial load, every alarm is a false positive · click a column to sort"
+    : "means over the finished configurations · click a column to sort, a row to select";
+  if (mode === "benign") renderBenignRanking(); else renderWartimeRanking();
+}
+
+function renderWartimeRanking() {
   const run = state.run, dets = detectors(run), {configs, sections} = finishedConfigs(run);
   const view = $("detector-view");
   if (!dets.length || !configs.length) {
@@ -566,28 +612,28 @@ function renderBreakdown() {
   TF.hbars($("top-domains"), (s?.top_domains || []).map(([d, n, tunnel]) => ({label: d, value: n, note: tunnel ? "tunnel" : ""})));
 }
 
-// Info box of the benign-only window: window figures and each detector's false positives,
-// next to its mean FPR over the finished tunnel configurations (under adversarial load).
-function renderBenign() {
-  const run = state.run, show_ = hasBenignWindow(run), only = isBenignOnly(run);
-  $("benign-card").hidden = !show_;
-  // A benign-only run has no tunnel windows: hide what only tunnel traffic fills.
-  for (const id of ["results-card", "heat-card", "detectors-card", "tradeoff-card", "sweeps-card"]) $(id).hidden = only;
-  if (!show_) return;
+// Benign-only ranking: window figures and each detector's false positives, next to its
+// mean FPR over the finished tunnel configurations (under adversarial load). Sortable.
+function renderBenignRanking() {
+  const run = state.run, only = isBenignOnly(run);
   const entry = (run.configs || []).find(c => c.name === BENIGN);
   const stats = entry?.dataset_statistics || {}, live = run.current?.name === BENIGN;
   const {configs: tunnel} = finishedConfigs(run);
-  const rows = [...(entry?.detectors || [])].sort((a, b) =>
-    (a.fpr ?? Infinity) - (b.fpr ?? Infinity) || a.detector.localeCompare(b.detector));
-  const fprs = rows.map(r => r.fpr).filter(v => v != null);
-  const maxFpr = Math.max(0, ...fprs), P = run.timing?.peacetime_duration || 0;
+  const P = run.timing?.peacetime_duration || 0;
   const tunnelFpr = d => tunnel.length ? meanOf(tunnel, d, "fpr") : null;
+  const rows = (entry?.detectors || []).map(r => {
+    const tf = tunnelFpr(r.detector);
+    return {...r, tunnel_fpr: tf, change: tf != null && r.fpr != null ? tf - r.fpr : null};
+  });
+  const fprs = rows.map(r => r.fpr).filter(v => v != null);
+  const maxFpr = Math.max(0, ...fprs);
   const windowSec = stats.window_seconds
     ?? (live && run.current.window_started ? (now() - parseTime(run.current.window_started)) / 1000 : null);
   const kpi = (label, value, sub = "") => `<div class="mini-kpi"><div class="kpi-label">${label}</div>
     <div class="kpi-value mono">${value}</div><div class="kpi-sub ellipsis">${sub}</div></div>`;
   const meanFpr = fprs.length ? fprs.reduce((a, b) => a + b, 0) / fprs.length : null;
-  const meanTunnel = rows.map(r => tunnelFpr(r.detector)).filter(v => v != null);
+  const meanTunnel = rows.map(r => r.tunnel_fpr).filter(v => v != null);
+  const best = [...rows].sort((a, b) => (a.fpr ?? Infinity) - (b.fpr ?? Infinity) || a.detector.localeCompare(b.detector))[0];
   const status = entry ? endedBy(entry) : live ? "running" : run.status === "running" ? "pending" : "not run";
   $("benign-kpis").innerHTML =
       kpi("Window", show(windowSec, TF.fmtDuration), TF.esc(status))
@@ -595,7 +641,7 @@ function renderBenign() {
           ? `${(stats.total_queries / windowSec).toFixed(1)} / s` : "")
     + kpi("Benign domains", show(stats.unique_domains, TF.fmtCompact), "registered domains seen")
     + kpi("Allowlist", P > 0 ? "peacetime" : "global only", P > 0 ? `learned over ${TF.fmtDuration(P)}` : "no peacetime")
-    + kpi("Lowest FPR", rows.length ? fmtFpr(rows[0].fpr ?? 0) : "–", rows.length ? TF.esc(rows[0].detector) : "")
+    + kpi("Lowest FPR", best ? fmtFpr(best.fpr ?? 0) : "–", best ? TF.esc(best.detector) : "")
     + kpi("Mean FPR", show(meanFpr, fmtFpr), meanTunnel.length
           ? `with tunnel ${fmtFpr(meanTunnel.reduce((a, b) => a + b, 0) / meanTunnel.length)}`
           : rows.length ? `over ${rows.length} detector${rows.length === 1 ? "" : "s"}` : "");
@@ -611,26 +657,82 @@ function renderBenign() {
   $("benign-note").className = `note${stats.tunnel_queries > 0 || entry?.status === "failed" ? " warn" : ""}`;
   $("benign-note").textContent = notes.join(" ");
   if (!rows.length) { $("benign-table").innerHTML = ""; return; }
-  const withTunnel = !only;
+
+  const cols = BENIGN_COLUMNS.filter(c => !c.tunnel || !only);
+  const {key, dir} = state.benignSort, sortCol = cols.find(c => c.key === key) || cols[0];
+  const cmp = (a, b, k, direction) => {
+    const va = a[k], vb = b[k];
+    if (va == null || vb == null) return (va == null) - (vb == null);   // missing values last
+    return direction === "asc" ? va - vb : vb - va;
+  };
+  rows.sort((a, b) => cmp(a, b, sortCol.key, dir) || cmp(a, b, "fpr", "asc") || a.detector.localeCompare(b.detector));
   const sw = d => `<span class="swatch" style="background:${detectorColor(d)}"></span>`;
   const file = `/runs/${encodeURIComponent(state.runId)}/${TF.esc(entry.file)}`;
-  $("benign-table").innerHTML = `<tr><th>#</th><th class="l">Detector</th><th>FPR benign-only</th>`
-    + (withTunnel ? `<th title="mean FPR over the finished tunnel configurations">FPR with tunnel</th><th title="with tunnel minus benign-only">Change</th>` : "")
-    + `<th title="falsely flagged registered domains">FP domains</th><th title="registered domains without an alarm">TN domains</th>
-       <th title="falsely flagged domains per hour of the window">FP / h</th>
-       <th title="detector allowlist: peacetime alarms plus the global allowlist">Allowlist</th><th class="l">False alarms</th></tr>`
+  const head = cols.map(c => {
+    const active = c.key === sortCol.key, arrow = active ? (dir === "asc" ? " ▲" : " ▼") : "";
+    return `<th aria-sort="${active ? (dir === "asc" ? "ascending" : "descending") : "none"}">
+      <button class="sort" data-bsort="${c.key}" title="${TF.esc(c.title || `Sort by ${c.label}`)}${c.lower ? " (lower is better)" : ""}">${c.label}${arrow}</button></th>`;
+  }).join("");
+  $("benign-table").innerHTML = `<tr><th>#</th><th class="l">Detector</th>${head}<th class="l">False alarms</th></tr>`
     + rows.map((r, i) => {
       const sample = r.false_positives_sample || [], more = (r.fp || 0) - sample.length;
       const list = r.fp ? `${TF.esc(sample.join(", "))}${more > 0 ? ` <a href="${file}" target="_blank" rel="noopener">+${more} more</a>` : ""}`
                         : '<span class="muted">none</span>';
-      const meter = `<span class="mini-meter" aria-hidden="true"><i style="width:${maxFpr ? 100 * (r.fpr || 0) / maxFpr : 0}%"></i></span>`;
-      const tf = tunnelFpr(r.detector), change = tf != null && r.fpr != null ? tf - r.fpr : null;
-      return `<tr><td>${i + 1}</td><td class="l">${sw(r.detector)}${TF.esc(r.detector)}</td>
-        <td class="mono">${show(r.fpr, fmtFpr)}${meter}</td>`
-        + (withTunnel ? `<td class="mono">${show(tf, fmtFpr)}</td><td class="mono">${show(change, v => (v > 0 ? "+" : "") + fmtFpr(v))}</td>` : "")
-        + `<td class="mono">${show(r.fp, String)}</td><td class="mono">${show(r.tn, String)}</td>
-        <td class="mono">${show(r.fp_domains_per_hour, v => v.toFixed(1))}</td><td class="mono">${show(r.allowlist_size, TF.fmtCompact)}</td>
-        <td class="fp-list">${list}</td></tr>`;
+      const cells = cols.map(c => {
+        const meter = c.meter ? `<span class="mini-meter" aria-hidden="true"><i style="width:${maxFpr ? 100 * (r.fpr || 0) / maxFpr : 0}%"></i></span>` : "";
+        return `<td class="mono">${show(r[c.key], c.fmt)}${meter}</td>`;
+      }).join("");
+      return `<tr><td>${i + 1}</td><td class="l">${sw(r.detector)}${TF.esc(r.detector)}</td>${cells}<td class="fp-list">${list}</td></tr>`;
+    }).join("");
+}
+
+// A benign-only run has no tunnel windows: hide the views that only tunnel traffic fills.
+function renderTunnelCards() {
+  const only = isBenignOnly(state.run);
+  for (const id of ["results-card", "heat-card", "configrank-card", "tradeoff-card", "sweeps-card"]) $(id).hidden = only;
+}
+
+// Configuration ranking: which finished tunnel configuration exfiltrated the most data
+// across all detectors (mean and minimum ULV %, net leak, how many detectors caught it).
+function renderConfigRanking() {
+  const run = state.run, {configs} = finishedConfigs(run), dets = detectors(run);
+  if (!configs.length) { $("config-rank").innerHTML = '<tr><td class="muted">No finished configuration yet</td></tr>'; return; }
+  const groupOf = new Map((run.config_groups || []).map(g => [g.name, g]));
+  const mean = v => v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+  const rows = configs.map(c => {
+    const vals = k => dets.map(d => valueOf(c, d, k)).filter(v => v != null);
+    const ulv = vals("ulv_percent"), stats = c.dataset_statistics || {};
+    const ran = c.detectors.length;
+    return {name: c.name, entry: c, group: groupOf.get(c.name),
+            mean_ulv: mean(ulv), min_ulv: ulv.length ? Math.min(...ulv) : null, mean_net: mean(vals("net_up_bytes")),
+            file: stats.exfil_file_bytes ?? stats.exfil_file_bytes_server ?? null,
+            detected: c.detectors.filter(d => (d.tp ?? 0) > 0).length, ran, mean_f1: mean(vals("f1")),
+            tunnel_queries: stats.tunnel_queries ?? null,
+            duration: c.started && c.finished ? (parseTime(c.finished) - parseTime(c.started)) / 1000 : null};
+  });
+  const {key, dir} = state.configSort, sortCol = CONFIG_COLUMNS.find(c => c.key === key) || CONFIG_COLUMNS[0];
+  const cmp = (a, b, k, direction) => {
+    const va = a[k], vb = b[k];
+    if (va == null || vb == null) return (va == null) - (vb == null);   // missing values last
+    return direction === "asc" ? va - vb : vb - va;
+  };
+  rows.sort((a, b) => cmp(a, b, sortCol.key, dir) || cmp(a, b, "mean_ulv", "desc") || cmp(a, b, "mean_net", "desc")
+    || a.name.localeCompare(b.name));
+  const head = CONFIG_COLUMNS.map(c => {
+    const active = c.key === sortCol.key, arrow = active ? (dir === "asc" ? " ▲" : " ▼") : "";
+    return `<th aria-sort="${active ? (dir === "asc" ? "ascending" : "descending") : "none"}">
+      <button class="sort" data-csort="${c.key}" title="${TF.esc(c.title || `Sort by ${c.label}`)}">${c.label}${arrow}</button></th>`;
+  }).join("");
+  $("config-rank").innerHTML = `<tr><th>#</th><th class="l">Configuration</th>${head}<th class="l">Ended by</th></tr>`
+    + rows.map((r, i) => {
+      const cells = CONFIG_COLUMNS.map(c => {
+        const v = r[c.key];
+        const text = c.key === "detected" ? `${v} / ${r.ran}` : show(v, c.fmt);
+        const meter = c.meter ? `<span class="mini-meter" aria-hidden="true"><i style="width:${Math.min(100, Math.max(0, 100 * (v || 0) / c.meter))}%"></i></span>` : "";
+        return `<td class="mono">${text}${meter}</td>`;
+      }).join("");
+      const group = r.group && r.group.group !== r.name ? ` <span class="muted small">${TF.esc(r.group.group)}</span>` : "";
+      return `<tr><td>${i + 1}</td><td class="l">${TF.esc(r.name)}${group}</td>${cells}<td class="l">${TF.esc(endedBy(r.entry))}</td></tr>`;
     }).join("");
 }
 
@@ -647,9 +749,9 @@ function renderLog() {
 
 function renderAll() {
   if (!state.run) return;
-  renderTop(); renderKPIs(); renderTimes(); renderCurrent(); renderBenign();
+  renderTop(); renderKPIs(); renderTimes(); renderCurrent(); renderTunnelCards();
   renderTraffic(); renderResources(); renderResults(); renderBreakdown();
-  renderHeat(); renderDetectors(); renderTradeoff(); renderSweeps(); renderRecords();
+  renderHeat(); renderDetectors(); renderConfigRanking(); renderTradeoff(); renderSweeps(); renderRecords();
 }
 
 function renderEmpty() {
@@ -658,7 +760,7 @@ function renderEmpty() {
   for (const id of ["chart-dns", "chart-cpu", "chart-mem", "chart-results", "chart-heat", "chart-tradeoff", "chart-sweep",
                     "chart-qtypes", "chart-atypes", "chart-qlen", "chart-entropy"]) TF.empty($(id), "No data yet");
   $("detector-view").hidden = true;
-  $("benign-card").hidden = true;
+  $("det-mode").hidden = true;
 }
 
 /* ---------- loop and controls ---------- */
@@ -719,6 +821,23 @@ $("leaderboard").addEventListener("click", ev => {
     return;
   }
   selectDetector(ev);
+});
+$("config-rank").addEventListener("click", ev => {
+  const b = ev.target.closest("button[data-csort]"); if (!b) return;
+  const col = CONFIG_COLUMNS.find(c => c.key === b.dataset.csort), same = state.configSort.key === col.key;
+  state.configSort = {key: col.key, dir: same ? (state.configSort.dir === "asc" ? "desc" : "asc") : col.evasive};
+  if (state.run) renderConfigRanking();
+});
+$("det-mode").addEventListener("click", ev => {
+  const b = ev.target.closest("button[data-mode]"); if (!b) return;
+  state.detMode = b.dataset.mode;
+  if (state.run) renderDetectors();
+});
+$("benign-table").addEventListener("click", ev => {
+  const b = ev.target.closest("button[data-bsort]"); if (!b) return;
+  const col = BENIGN_COLUMNS.find(c => c.key === b.dataset.bsort), same = state.benignSort.key === col.key;
+  state.benignSort = {key: col.key, dir: same ? (state.benignSort.dir === "asc" ? "desc" : "asc") : (col.lower ? "asc" : "desc")};
+  if (state.run) renderDetectors();
 });
 $("leaderboard").addEventListener("keydown", ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); selectDetector(ev); } });
 $("sweep-buttons").addEventListener("click", ev => {

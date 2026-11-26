@@ -154,7 +154,6 @@ th[aria-sort="ascending"] button.sort, th[aria-sort="descending"] button.sort { 
 .card-controls { display:flex; flex-wrap:wrap; gap:6px; margin:-4px 0 8px; }
 
 /* benign-only baseline */
-.card.callout { border-left:3px solid var(--accent); }
 .note { margin:4px 0 10px; padding:6px 10px; border-radius:6px; background:var(--surface-2); color:var(--ink-2); }
 .note.warn { border-left:3px solid var(--warning); color:var(--ink); }
 td.fp-list { white-space:normal; text-align:left; min-width:220px; overflow-wrap:anywhere; }

@@ -485,6 +485,41 @@ def _benign_section(benign: dict, completed: list, detectors: list, swatch) -> s
     return "".join(parts)
 
 
+def _config_ranking(completed: list, detectors: list, groups: dict) -> str:
+    """HTML table: tunnel configurations by the data they exfiltrated across all detectors."""
+    e = html.escape
+    rows = []
+    for c in completed:
+        vals = lambda key: [v for v in (_value(c, d, key) for d in detectors) if v is not None]
+        ulv, stats = vals("ulv_percent"), c.get("dataset_statistics") or {}
+        rows.append({
+            "name": c["name"], "group": groups.get(c["name"], {}).get("group", ""), "config": c,
+            "mean_ulv": _mean(ulv), "min_ulv": min(ulv) if ulv else None, "mean_net": _mean(vals("net_up_bytes")),
+            "file": stats.get("exfil_file_bytes") or stats.get("exfil_file_bytes_server"),
+            "detected": sum(1 for row in c.get("detectors", []) if (row.get("tp") or 0) > 0),
+            "ran": len(c.get("detectors", [])), "mean_f1": _mean(vals("f1")),
+            "tunnel_queries": stats.get("tunnel_queries"),
+        })
+    # Most exfiltrated first; configurations without a ULV value last.
+    rows.sort(key=lambda r: (r["mean_ulv"] is None, -(r["mean_ulv"] or 0), -(r["mean_net"] or 0), r["name"]))
+    parts = ["<h2>Configuration ranking</h2><div class='card'><table><tr><th>#</th><th class='l'>Configuration</th>"
+             "<th class='l'>Group</th><th>Mean ULV %</th><th>Min ULV %</th><th>Mean net leak</th><th>File</th>"
+             "<th>Detected by</th><th>Mean F1</th><th>Tunnel queries</th><th class='l'>Ended by</th></tr>"]
+    for rank, r in enumerate(rows, 1):
+        meter = f"<span class='meter'><i style='width:{min(100, r['mean_ulv'] or 0):.0f}%'></i></span>"
+        parts.append(f"<tr><td>{rank}</td><td class='l'>{e(r['name'])}</td><td class='l'>{e(r['group'] if r['group'] != r['name'] else '')}</td>"
+                     f"<td>{_pct(r['mean_ulv'])}{meter}</td><td>{_pct(r['min_ulv'])}</td>"
+                     f"<td>{fmt_bytes(r['mean_net']) if r['mean_net'] is not None else '–'}</td>"
+                     f"<td>{fmt_bytes(r['file']) if r['file'] else '–'}</td><td>{r['detected']} / {r['ran']}</td>"
+                     f"<td>{_fmt(r['mean_f1'])}</td><td>{r['tunnel_queries'] if r['tunnel_queries'] is not None else '–'}</td>"
+                     f"<td class='l'>{e(_ended_by(r['config']))}</td></tr>")
+    parts.append("</table><p class='sub'>Which configuration exfiltrated the most data across all detectors, most "
+                 "first: mean ULV % over the detectors (share of the file that left before the alarm), then mean net "
+                 "leak. Min ULV %: what left even before the best detector's alarm. Detected by: detectors that "
+                 "flagged a tunneling domain.</p></div>")
+    return "".join(parts)
+
+
 def render_html(run_dir: Path, state: dict, charts: list) -> Path:
     """Write ``report.html`` for the run and return its path."""
     e = html.escape
@@ -539,6 +574,9 @@ def render_html(run_dir: Path, state: dict, charts: list) -> Path:
                      "file that left before the detector's alarm (DNSExfiltrator mode: decoded data chunks over the file "
                      "size the tool announced; replay mode: share of the raw tunnel uplink). DLV %: the same for the "
                      "downlink. Lower is better.</p></div>")
+
+    if completed and detectors:
+        parts.append(_config_ranking(completed, detectors, groups))
 
     configs = state.get("configs", [])
     parts.append("<h2>Configurations</h2><div class='card'><table><tr><th>Configuration</th><th class='l'>Group</th>"
