@@ -80,6 +80,7 @@ def list_runs(results_dir: Path) -> list:
             "id": run_dir.name,
             "name": state.get("name"),
             "status": state.get("status"),
+            "mode": state.get("mode"),
             "phase": state.get("phase"),
             "started": state.get("started"),
             "updated": state.get("updated"),

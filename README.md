@@ -89,12 +89,15 @@ A run has these steps:
 
 1. **Setup.** `main.py` validates the configuration, generates the BIND configs, clears the collector log while the containers are stopped, and starts the `essential` Docker profile.
 2. **Peacetime (optional).** If `timing.peacetime_duration` > 0, the benign and wildcard replays start and every log line is fed to the detectors as benign. Every domain a detector alarms on is added to that detector's allowlist, merged with the global allowlist.
-3. **Wartime.** Benign and wildcard replays continue (or start, if there was no peacetime). Tunnel traffic comes from one of two sources:
+3. **Benign-only window (optional).** If `timing.benign_only_duration` > 0, a window named `benign_only` runs next. It is a wartime window without tunnel traffic: only the benign and wildcard replays run, the tunnel replay and the DNSExfiltrator client start only afterwards. Detectors and their allowlists are prepared exactly as for the tunnel windows that follow (in DNSExfiltrator mode they are reset as before every configuration), and every window replays the same benign and wildcard segment. Since there is no tunnel traffic, every alarm is a false positive: the window measures each detector's FPR under normal conditions, without adversarial load. Only FP, TN and FPR are meaningful; the window is kept out of every tunnel aggregate (ranking, means, charts) and compared with the FPR under tunnel load instead. After it, alarms and counters are reset so nothing carries over into the tunnel windows. Should queries to a tunneling domain show up anyway (e.g. from a tool started by hand), they are evaluated as tunnel traffic and the dashboard warns about it.
+4. **Wartime.** Benign and wildcard replays continue (or start, if there was no peacetime). Tunnel traffic comes from one of two sources:
    - **Replay mode** (`traffic.tunnel.replay: true`): a tunnel pcap is replayed.
    - **DNSExfiltrator mode** (`dnsexfiltrator.enabled: true`): the DNSExfiltrator containers run one configuration after another (baseline, sweeps, profiles). Detectors are reset at every configuration boundary; allowlists are kept. Before each configuration, cached answers for the tunnel domains are flushed on the resolver, root and TLD servers (`rndc flushtree`), so every configuration reaches its own server.
 
    A wartime window ends when its timer expires, when every detector has flagged every tunneling domain, or (DNSExfiltrator mode, `dnsexfiltrator.stop_on_transfer_complete`) once the server has saved the exfiltrated file. In the last case the detectors first catch up with the log as it was at that moment, so every query of the transfer is evaluated. Windows ended this way differ in length; TN and FPR refer to each window. The results record how each window ended (`metadata.wartime_end`).
-4. **Evaluation.** Each detector reports domain-level metrics for the window, and one results file is written per window (per configuration in DNSExfiltrator mode) into the run's directory. At the end of the run the console shows a summary table, and charts plus `report.html` are written.
+5. **Evaluation.** Each detector reports domain-level metrics for the window, and one results file is written per window (per configuration in DNSExfiltrator mode) into the run's directory. At the end of the run the console shows a summary table, and charts plus `report.html` are written.
+
+So a run is: peacetime → benign-only window (optional) → DNSExfiltrator configurations or the tunnel pcap. A **benign-only run** is a benign-only window with neither `traffic.tunnel.replay` nor `dnsexfiltrator.enabled`: the run ends after that window. (Without a benign-only window the wartime window always runs, since tunnel traffic may come from a tool started by hand.)
 
 Each replay is started once per run and never restarted, so wartime sees the part of a capture that follows the peacetime slice. The collector log is never truncated while the collector runs; each phase reads from the byte offset where it started.
 
@@ -150,6 +153,7 @@ Renamed keys abort the run with a hint (`timing.duration` → `timing.wartime_du
 |---|---|---|---|---|
 | `timing.wartime_duration` | number | No | Wartime duration in minutes (per configuration in DNSExfiltrator mode) | `60` |
 | `timing.peacetime_duration` | number | No | Peacetime duration in minutes; `0` disables peacetime | `wartime_duration / 3` |
+| `timing.benign_only_duration` | number | No | Length in minutes of the benign-only window between peacetime and the tunnel windows (benign and wildcard traffic only, measures the FPR without adversarial load); `0` disables it. Use `timing.wartime_duration` for a window as long as each tunnel window. See [How It Works](#how-it-works) | `0` |
 
 ### Allowlist Settings
 
@@ -183,7 +187,7 @@ Renamed keys abort the run with a hint (`timing.duration` → `timing.wartime_du
 | `traffic.tunnel.replay` | bool | No | Replay tunnel traffic from a PCAP (ignored when DNSExfiltrator is enabled) | `false` |
 | `traffic.tunnel.pcap` | string | If replay | Filename of the tunnel PCAP | — |
 | `traffic.tunnel.pps` | int | No | Replay rate in packets per second | original speed |
-| `traffic.tunnel.tunneling_domains` | list[string] | **Yes** | Domains routed to the tunnel server and used as ground truth for the evaluation. Each entry must be a registered domain (eTLD+1 per the ICANN section of the Public Suffix List; private suffixes such as `duckdns.org` are not suffixes), e.g. `example.co.uk`, not `tunnel.example.co.uk`; otherwise the run aborts. Must not appear in the global allowlist | `[]` |
+| `traffic.tunnel.tunneling_domains` | list[string] | **Yes** (optional in a benign-only run) | Domains routed to the tunnel server and used as ground truth for the evaluation. Each entry must be a registered domain (eTLD+1 per the ICANN section of the Public Suffix List; private suffixes such as `duckdns.org` are not suffixes), e.g. `example.co.uk`, not `tunnel.example.co.uk`; otherwise the run aborts. Must not appear in the global allowlist | `[]` |
 | `traffic.tunnel.tunnel_server_ip` | IP | No | Tunnel server IP, within `192.168.0.0/16` | `192.168.4.4` |
 | `traffic.tunnel.expansion_factor` | number | No | Encoding expansion factor of replayed tunnel traffic (replay mode only) | `1` |
 
@@ -195,7 +199,7 @@ Renamed keys abort the run with a hint (`timing.duration` → `timing.wartime_du
 | `dnsexfiltrator.stop_on_transfer_complete` | bool | No | End a wartime window once the server reports the file as saved (`timing.wartime_duration` stays the upper bound) | `true` |
 | `dnsexfiltrator.baseline` | mapping | No | Baseline configuration (named `baseline`) | defaults below |
 | `dnsexfiltrator.sweeps` | list | No | `{name, parameter, values}`: one configuration per value, based on the baseline. `parameter: domain_count` spreads the transfer over the first N domains of the sweep's `domains` pool (default: `traffic.tunnel.tunneling_domains`; every pool domain must be listed there) | `[]` |
-| `dnsexfiltrator.profiles` | list | No | Named configurations; unset values come from the baseline | `[]` |
+| `dnsexfiltrator.profiles` | list | No | Named configurations; unset values come from the baseline (the name `benign_only` is reserved when the benign-only window is enabled) | `[]` |
 
 Valid parameters and their defaults: `file` (`/data/synthetic_cc_data_100.csv`), `password` (`tunframe`), `throttle` (`10`), `throttle_random` (`0`), `label_max_size` (`63`), `encoding` (`base32`; also `base32map`, `base64`, `hex`), `dilution` (`0`), `domains` (`[]`), `expansion_factor` (derived from `encoding`: 1.6, 4.8, 4/3, 2.0; only used when the net volume cannot be decoded, see below). Unknown parameter names abort the run. Every domain in `domains` must also be listed in `traffic.tunnel.tunneling_domains`.
 
@@ -227,6 +231,41 @@ traffic:
     tunneling_domains: ["example.com"]
 ```
 
+### Benign-only window before the DNSExfiltrator configurations
+
+Add to `example_config.yaml` (DNSExfiltrator and benign traffic enabled):
+
+```yaml
+timing:
+  wartime_duration: 30         # per DNSExfiltrator configuration
+  peacetime_duration: 20
+  benign_only_duration: 30     # as long as one tunnel window
+```
+
+### Benign-only run — FPR without adversarial load only
+
+```yaml
+timing:
+  peacetime_duration: 20
+  benign_only_duration: 60
+
+allowlist:
+  global_allowlist_path: "./allowlists/tranco.txt"
+
+traffic:
+  pcap_path: "./pcaps"
+  benign:
+    enabled: true
+    pcap: "benign.pcap"
+    pps: 20
+  tunnel:
+    replay: false              # no tunnel source: the run ends after the benign-only window
+    tunneling_domains: ["tunnel.com"]
+
+dnsexfiltrator:
+  enabled: false
+```
+
 ### Full — DNSExfiltrator with benign traffic and peacetime
 
 See `example_config.yaml`.
@@ -248,6 +287,7 @@ Follow a run live (status per configuration, charts, log) in a second terminal:
 
 The dashboard listens on `127.0.0.1` only and lists every run directory, so earlier runs stay browsable. Dark is the default theme; use the toggle or `?theme=light`. It shows:
 
+- **Benign-only baseline** (runs with a benign-only window): window length and how it ended, queries, benign registered domains, where the allowlists came from, and the lowest and mean FPR. The table lists every detector by FPR (lowest first) with its mean FPR over the finished tunnel configurations and the change (with tunnel minus benign-only), its falsely flagged and TN domains, false-alarm domains per hour, allowlist size and up to ten falsely flagged domains (the full list is in the window's json). The window is not part of the results, heatmap, ranking, trade-off or sweep views; in the configuration list its cells show FPR instead of F1. A benign-only run hides the views that need tunnel traffic. `report.html` has the same section.
 - **Key figures:** status and phase, running time, estimated end (from the average duration of finished configurations, plus the latest possible end), configuration `i / n`, DNSExfiltrator transfer progress, DNS queries per second and the tunnel share.
 - **Current configuration** with its parameters and window progress; all configurations (status, how each window ended, F1 per detector) in an expandable box.
 - **Charts:** DNS queries per second (all vs. tunnel) over the run with configuration boundaries, CPU and memory per container and of `main.py`, detection results per configuration for any metric (F1, precision, recall, FPR, ULV %, DLV %, leakage, runtime; table view), and a detector × configuration heatmap with its own metric selector. Configurations are grouped by origin (baseline, each sweep, profiles).
@@ -283,7 +323,7 @@ results/<name>_<timestamp>/
 ├── run.log               # console log of the run
 ├── metrics.jsonl         # live metrics every 2 s: DNS rates, response codes, top domains, record types, transfer progress, CPU/memory
 ├── control.json          # requests from the dashboard (skip configuration, stop run), if any
-├── configs/<config>.json # full results of one wartime window (one per DNSExfiltrator configuration)
+├── configs/<config>.json # full results of one wartime window (one per DNSExfiltrator configuration; benign_only.json for the benign-only window)
 ├── charts/*.png          # bars and heatmaps per metric (incl. ULV %), recall vs. FPR, sweeps; light + -dark
 └── report.html           # static report with the charts and the tables behind them
 ```
@@ -294,8 +334,9 @@ Each file in `configs/` contains:
 
 - `metadata.run_status`: `completed`, `interrupted`, `skipped` or `failed`, with a reason. Skipped and failed configurations also get a file.
 - `metadata.wartime_end`: how the window ended (`reason`: `transfer_complete`, `all_detected`, `timer`, `log_ended` or `interrupted`) and, in DNSExfiltrator mode, whether and after how many seconds the transfer completed.
+- `metadata.window_type`: `benign_only` for the benign-only window, otherwise `tunnel`. `run.json` has `mode`: `benign_only` for a benign-only run (no tunnel windows), otherwise `tunnel`.
 - `metadata.dnsexfiltrator_config`: the exact configuration of the window (DNSExfiltrator mode).
 - `metadata.run_info`: git commit and dirty flag, Python, library and Docker versions.
 - `metadata.complete_config`: the full `config.yaml`.
-- `metadata.dataset_statistics`: line, query and response counts of the window.
-- `detectors`: per-detector metrics. Confusion-matrix classes are domain-level over the registered domains seen in the window (TN excludes FN). Leakage volume (`traffic_volume_up_bytes`, `traffic_volume_down_bytes`) counts the query payload and the answer RDATA of tunneling traffic until the detector's first alarm; allowlisted tunneling traffic is reported separately (`allowlisted_tunnel_*`). **Net volume** (DNSExfiltrator mode): tunnel queries are split into init (`<encoding>|<size>`, possibly over several queries), data (`<sequence>.<chunk>.<domain>`) and dilution queries (`detection/exfil_payload.py`). `net_up_bytes` is the file data of the unique data chunks that passed before the detector's alarm, exact from the chunk length and the encoding announced in the init (base32: 5 bits per character, base32map: 5 bits per 3-letter word, hex: 4 bits); `estimated_real_traffic_up_bytes` carries the same value (`net_volume_method: "decoded"`). In replay mode it remains `traffic_volume_up_bytes / expansion_factor`. `ulv_percent` is `net_up_bytes` over the file size the tool announced (`ulv_basis: "file"`), i.e. how much of the (zipped, encrypted) file left before the alarm; in replay mode it is the share of the window's raw tunnel uplink (`ulv_basis: "tunnel_payload"`). `dlv_percent` is the raw share of the downlink (`tunnel_down_bytes`). Allowlisted tunnel traffic counts as leaked. `dataset_statistics` lists `tunnel_net_up_bytes`, the init / data / dilution / retried query counts, the file size from the init (`exfil_file_bytes`) and from the server log (`exfil_file_bytes_server`), the size of the source file and `net_volume_check`: `match` when the decoded data equals the announced size, `incomplete` when the transfer did not finish in the window.
+- `metadata.dataset_statistics`: line, query and response counts of the window, and `window_seconds` (the window's length) outside DNSExfiltrator mode.
+- `detectors`: per-detector metrics. Confusion-matrix classes are domain-level over the registered domains seen in the window (TN excludes FN). Leakage volume (`traffic_volume_up_bytes`, `traffic_volume_down_bytes`) counts the query payload and the answer RDATA of tunneling traffic until the detector's first alarm; allowlisted tunneling traffic is reported separately (`allowlisted_tunnel_*`). **Net volume** (DNSExfiltrator mode): tunnel queries are split into init (`<encoding>|<size>`, possibly over several queries), data (`<sequence>.<chunk>.<domain>`) and dilution queries (`detection/exfil_payload.py`). `net_up_bytes` is the file data of the unique data chunks that passed before the detector's alarm, exact from the chunk length and the encoding announced in the init (base32: 5 bits per character, base32map: 5 bits per 3-letter word, hex: 4 bits); `estimated_real_traffic_up_bytes` carries the same value (`net_volume_method: "decoded"`). In replay mode it remains `traffic_volume_up_bytes / expansion_factor`. `ulv_percent` is `net_up_bytes` over the file size the tool announced (`ulv_basis: "file"`), i.e. how much of the (zipped, encrypted) file left before the alarm; in replay mode it is the share of the window's raw tunnel uplink (`ulv_basis: "tunnel_payload"`). `dlv_percent` is the raw share of the downlink (`tunnel_down_bytes`). Allowlisted tunnel traffic counts as leaked. In the benign-only window every detector also gets `fp_domains_per_hour` (falsely flagged registered domains per hour of the window). `dataset_statistics` lists `tunnel_net_up_bytes`, the init / data / dilution / retried query counts, the file size from the init (`exfil_file_bytes`) and from the server log (`exfil_file_bytes_server`), the size of the source file and `net_volume_check`: `match` when the decoded data equals the announced size, `incomplete` when the transfer did not finish in the window.

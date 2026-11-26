@@ -10,6 +10,7 @@ detectors:
 timing:
   wartime_duration: 60         # per configuration in DNSExfiltrator mode
   peacetime_duration: 20       # 0 disables peacetime
+  benign_only_duration: 0      # benign-only window after peacetime (FPR without tunnel traffic); 0 disables it
 
 allowlist:
   global_allowlist_path: ""    # e.g. "./allowlists/tranco.csv"

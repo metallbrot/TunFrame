@@ -67,10 +67,23 @@ def _group_meta(state: dict) -> dict:
     return {g["name"]: g for g in state.get("config_groups") or []}
 
 
+# Window without tunnel traffic (timing.benign_only_duration); only its FPR is meaningful.
+BENIGN_WINDOW = "benign_only"
+
+
+def _benign_window(state: dict):
+    """The run.json entry of the benign-only window, or None."""
+    return next((c for c in state.get("configs", []) if c.get("name") == BENIGN_WINDOW), None)
+
+
 def _completed(state: dict) -> list:
-    """Configurations with detector results, in planned (grouped) order."""
+    """Tunnel configurations with detector results, in planned (grouped) order.
+
+    The benign-only window is left out: it has no tunnel traffic, so recall,
+    F1 and leakage carry no information (see ``_benign_section``).
+    """
     order = {name: i for i, name in enumerate(state.get("planned_configs") or [])}
-    configs = [c for c in state.get("configs", []) if c.get("detectors")]
+    configs = [c for c in state.get("configs", []) if c.get("detectors") and c.get("name") != BENIGN_WINDOW]
     return sorted(configs, key=lambda c: order.get(c["name"], len(order)))
 
 
@@ -435,6 +448,43 @@ def _chart_cards(charts, section, wide=False) -> str:
     return f"<div class='charts{' wide' if wide else ''}'>{''.join(cards)}</div>" if cards else ""
 
 
+def _benign_section(benign: dict, completed: list, detectors: list, swatch) -> str:
+    """HTML of the benign-only baseline: each detector's FPR without and with tunnel traffic."""
+    e = html.escape
+    stats = benign.get("dataset_statistics") or {}
+    rows = sorted(benign.get("detectors") or [], key=lambda r: (r.get("fpr") is None, r.get("fpr") or 0, r["detector"]))
+    with_tunnel = bool(completed)
+    parts = ["<h2>Benign-only baseline</h2><div class='card'>",
+             f"<p class='sub'>{_status(benign.get('status', ''))} · ended by {e(_ended_by(benign))} · "
+             f"{e(benign.get('reason') or '')} · {stats.get('total_queries', '–')} queries · "
+             f"{stats.get('unique_domains', '–')} registered domains · "
+             f"{stats.get('window_seconds', '–')} s</p>"]
+    if stats.get("tunnel_queries"):
+        parts.append(f"<p class='sub'>{stats['tunnel_queries']} queries to tunneling domains were seen in this window; "
+                     "they count as tunnel traffic, not as false positives.</p>")
+    parts.append("<table><tr><th class='l'>Detector</th><th>FPR benign-only</th>"
+                 + ("<th>FPR with tunnel</th><th>Change</th>" if with_tunnel else "")
+                 + "<th>FP domains</th><th>TN domains</th><th>FP / h</th><th>Allowlist</th><th class='l'>False alarms</th></tr>")
+    for r in rows:
+        d = r["detector"]
+        tunnel_fpr = _mean([_value(c, d, "fpr") for c in completed]) if with_tunnel else None
+        change = (tunnel_fpr - r["fpr"]) if tunnel_fpr is not None and r.get("fpr") is not None else None
+        sample = r.get("false_positives_sample") or []
+        more = (r.get("fp") or 0) - len(sample)
+        per_hour = r.get("fp_domains_per_hour")
+        parts.append(f"<tr><td class='l'>{swatch(d)}{e(d)}</td><td>{_fmt(r.get('fpr'), 5)}</td>"
+                     + (f"<td>{_fmt(tunnel_fpr, 5)}</td><td>{'–' if change is None else f'{change:+.5f}'}</td>" if with_tunnel else "")
+                     + f"<td>{r.get('fp', '–')}</td><td>{r.get('tn', '–')}</td>"
+                     f"<td>{'–' if per_hour is None else f'{per_hour:.1f}'}</td><td>{r.get('allowlist_size', '–')}</td>"
+                     f"<td class='l'>{e(', '.join(sample)) or 'none'}{f' (+{more} more)' if more > 0 else ''}</td></tr>")
+    parts.append("</table><p class='sub'>Benign and wildcard traffic only, after peacetime and with the same "
+                 "allowlists as the tunnel windows, so every alarm is a false positive. "
+                 + ("FPR with tunnel: mean over the finished tunnel configurations; Change: with tunnel minus "
+                    "benign-only. " if with_tunnel else "")
+                 + f"Full false-alarm lists: <a href='{e(benign.get('file') or '')}'>{e(benign.get('file') or '')}</a>.</p></div>")
+    return "".join(parts)
+
+
 def render_html(run_dir: Path, state: dict, charts: list) -> Path:
     """Write ``report.html`` for the run and return its path."""
     e = html.escape
@@ -459,6 +509,10 @@ def render_html(run_dir: Path, state: dict, charts: list) -> Path:
                  f"<dt>Started</dt><dd>{e(str(state.get('started')))}</dd>"
                  f"<dt>Finished</dt><dd>{e(str(state.get('finished')))}</dd>"
                  f"<dt>Commit</dt><dd>{e(commit)}</dd></dl></div>")
+
+    benign = _benign_window(state)
+    if benign and benign.get("detectors"):
+        parts.append(_benign_section(benign, completed, detectors, swatch))
 
     # Detector comparison: mean of every metric over the finished configurations,
     # least exfiltrated volume first, then the best F1 (as the dashboard ranking).

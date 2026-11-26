@@ -32,6 +32,13 @@
     <div class="kpi"><div class="kpi-label">DNS queries / s</div><div class="kpi-value mono" id="k-qps">–</div><div class="kpi-sub" id="k-qps-sub"></div></div>
   </section>
 
+  <section class="card callout span-12" id="benign-card" aria-labelledby="h-benign" hidden>
+    <h2 id="h-benign">Benign-only baseline <span class="muted small">false positive rate without adversarial load · benign and wildcard traffic only, so every alarm is a false positive</span></h2>
+    <div class="mini-kpis" id="benign-kpis"></div>
+    <div id="benign-note" class="note" hidden></div>
+    <div class="table-wrap"><table id="benign-table"></table></div>
+  </section>
+
   <section class="card span-4" aria-labelledby="h-current">
     <h2 id="h-current">Current configuration</h2>
     <div id="current"></div>
@@ -55,7 +62,7 @@
     <div class="chart" id="chart-mem"></div>
   </section>
 
-  <section class="card span-8" aria-labelledby="h-results">
+  <section class="card span-8" id="results-card" aria-labelledby="h-results">
     <h2 id="h-results"><span id="results-title">Detection results</span><span class="spacer"></span>
       <span role="group" aria-label="Metric" id="metric-buttons" class="seg"></span>
       <button id="table-toggle" class="btn btn-small" aria-pressed="false">Table</button></h2>
@@ -71,13 +78,13 @@
     <div id="top-domains"></div>
   </section>
 
-  <section class="card span-12" aria-labelledby="h-heat">
+  <section class="card span-12" id="heat-card" aria-labelledby="h-heat">
     <h2 id="h-heat"><span id="heat-title">Heatmap</span><span class="spacer"></span>
       <span role="group" aria-label="Heatmap metric" id="heat-buttons" class="seg"></span></h2>
     <div class="chart" id="chart-heat"></div>
   </section>
 
-  <section class="card span-12" aria-labelledby="h-detectors">
+  <section class="card span-12" id="detectors-card" aria-labelledby="h-detectors">
     <h2 id="h-detectors">Detectors <span class="muted small">means over the finished configurations · click a column to sort, a row to select</span></h2>
     <div class="table-wrap"><table id="leaderboard" class="clickable"></table></div>
     <div id="detector-view" class="detector-view">
@@ -93,11 +100,11 @@
     </div>
   </section>
 
-  <section class="card span-6" aria-labelledby="h-tradeoff">
+  <section class="card span-6" id="tradeoff-card" aria-labelledby="h-tradeoff">
     <h2 id="h-tradeoff">Detection trade-off <span class="muted small">recall over FPR · one point per configuration</span></h2>
     <div class="chart" id="chart-tradeoff"></div>
   </section>
-  <section class="card span-6" aria-labelledby="h-sweeps">
+  <section class="card span-6" id="sweeps-card" aria-labelledby="h-sweeps">
     <h2 id="h-sweeps"><span id="sweep-title">Sweeps</span><span class="spacer"></span>
       <span role="group" aria-label="Sweep" id="sweep-buttons" class="seg"></span></h2>
     <div class="card-controls"><span role="group" aria-label="Sweep metric" id="sweep-metric-buttons" class="seg"></span></div>

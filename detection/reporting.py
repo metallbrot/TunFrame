@@ -32,7 +32,10 @@ SUMMARY_KEYS = (
     "estimated_real_traffic_up_bytes", "net_up_bytes", "net_volume_method",
     "ulv_percent", "ulv_basis", "dlv_percent",
     "runtime", "avg_process_time_ms", "processed_lines",
+    "fp_domains_per_hour", "allowlist_size", "total_alarms",
 )
+# Falsely flagged domains copied into run.json per detector (the full list is in configs/).
+FALSE_POSITIVE_SAMPLE = 10
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -56,6 +59,7 @@ def summarize_detectors(results) -> list:
     for result in results or []:
         row = {"detector": result.get("detector_name", "unknown")}
         row.update({key: result.get(key) for key in SUMMARY_KEYS})
+        row["false_positives_sample"] = sorted(result.get("false_positives_list") or [])[:FALSE_POSITIVE_SAMPLE]
         summary.append(row)
     return summary
 

@@ -585,4 +585,28 @@ main.REPORT = None
 main.RESULTS_DIR = _old_dir
 main.logger.setLevel(logging.ERROR)
 
+# Benign-only window: peacetime -> benign-only (optional) -> tunnel windows; every alarm a false positive
+from detection.reporting import summarize_detectors
+from detection import report_charts as _rc_mod
+_t = lambda **kw: {'timing': {'benign_only_duration': 10}, **kw}
+_plan = (main.benign_window_duration(_t()), main.tunnel_windows_planned(_t()),
+         main.tunnel_windows_planned(_t(dnsexfiltrator={'enabled': True})),
+         main.tunnel_windows_planned(_t(traffic={'tunnel': {'replay': True}})),
+         main.benign_window_duration({}), main.tunnel_windows_planned({}))
+_war_src = _war[_war.index("def run_wartime_phase("):]
+_order = (_war_src.index("run_single_window(BENIGN_WINDOW") < _war_src.index("wartime_offset = log_end_offset(LOGFILE)")
+          < _war_src.index('start_replay("tunnel"') < _war_src.index("if dnsexfil_enabled and dnsexfil_configs:\n        # Verify"))
+_bd = FlagTunnel(); _bd.alarms = {'a.org', 'b.org'}
+_br = [_bd.evaluate(set(), {'a.org', 'b.org', 'c.org', 'd.org'}, 10, 0, set())]
+main.add_false_alarm_rates(_br, 1800)
+_bs = summarize_detectors(_br)[0]
+_state = {'configs': [{'name': 'benign_only', 'detectors': [_bs]}, {'name': 'cfg', 'detectors': [_bs]}], 'planned_configs': ['benign_only', 'cfg']}
+check("K1 benign-only window before the tunnel windows, kept out of tunnel aggregates",
+      _plan == (600.0, False, True, True, 0.0, True) and _order
+      and (_bs['fp'], _bs['tn'], _bs['fpr'], _bs['fp_domains_per_hour']) == (2, 2, 0.5, 4.0)
+      and _bs['false_positives_sample'] == ['a.org', 'b.org']
+      and [c['name'] for c in _rc_mod._completed(_state)] == ['cfg'] and _rc_mod._benign_window(_state)['name'] == 'benign_only',
+      "plan=%s order=%s fp=%s tn=%s fpr=%s fp/h=%s report configs=%s" % (_plan, _order, _bs['fp'], _bs['tn'], _bs['fpr'],
+      _bs['fp_domains_per_hour'], [c['name'] for c in _rc_mod._completed(_state)]))
+
 sys.exit(1 if FAILS else 0)

@@ -100,6 +100,15 @@ function toast(text) {
   clearTimeout(el._t); el._t = setTimeout(() => { el.hidden = true; }, 5000);
 }
 const latestSample = () => state.metrics.samples[state.metrics.samples.length - 1];
+// Benign-only window (timing.benign_only_duration): runs between peacetime and the tunnel
+// windows with benign and wildcard traffic only, so every alarm is a false positive; it
+// measures each detector's FPR without adversarial load. It is kept out of every tunnel
+// aggregate (results, heatmap, ranking, trade-off) and shown in its own info box.
+// A benign-only run (mode "benign_only") has this window and no tunnel windows.
+const BENIGN = "benign_only";
+const isBenignOnly = run => run?.mode === "benign_only";
+const hasBenignWindow = run => (run?.planned_configs || []).includes(BENIGN) || (run?.configs || []).some(c => c.name === BENIGN);
+const fmtFpr = v => v === 0 ? "0" : v.toPrecision(3);
 
 /* ---------- data ---------- */
 async function loadRuns() {
@@ -107,7 +116,7 @@ async function loadRuns() {
   const select = $("run-select");
   select.replaceChildren(...state.runs.map(r => {
     const o = document.createElement("option");
-    o.value = r.id; o.textContent = `${r.name} · ${r.started} · ${r.status}`;
+    o.value = r.id; o.textContent = `${r.name} · ${r.started} · ${r.status}${r.mode === "benign_only" ? " · benign only" : ""}`;
     return o;
   }));
   if (!state.runs.length) { state.runId = null; return; }
@@ -162,17 +171,23 @@ async function loadLog() {
 }
 
 /* ---------- timing ---------- */
+// Maximum length of a window: the benign-only window has its own duration.
+const windowMax = (run, name) => name === BENIGN ? run.timing?.benign_only_duration || 0 : run.timing?.wartime_duration;
 function eta(run) {
   const W = run.timing?.wartime_duration, P = run.timing?.peacetime_duration || 0;
   if (run.status !== "running" || !W) return null;
   const done = new Set((run.configs || []).map(c => c.name));
   const current = run.current?.name;
-  const pending = (run.planned_configs || []).filter(n => !done.has(n) && n !== current).length;
+  const pendingNames = (run.planned_configs || []).filter(n => !done.has(n) && n !== current);
   const t = now();
-  const finished = (run.configs || []).filter(c => c.started && c.finished)
+  const finished = (run.configs || []).filter(c => c.started && c.finished && c.name !== BENIGN)
     .map(c => (parseTime(c.finished) - parseTime(c.started)) / 1000);
   const perConfig = finished.length ? finished.reduce((a, b) => a + b, 0) / finished.length : W + 15;
-  let upper = pending * (W + 15), estimate = pending * perConfig;
+  let upper = 0, estimate = 0;
+  for (const n of pendingNames) {
+    upper += windowMax(run, n) + 15;
+    estimate += n === BENIGN ? windowMax(run, n) + 5 : perConfig;
+  }
   if (run.phase === "setup") { upper += P + W + 15; estimate += P + perConfig; }
   else if (run.phase === "peacetime") {
     const rest = Math.max(0, P - (t - parseTime(run.phase_started)) / 1000);
@@ -180,9 +195,9 @@ function eta(run) {
   }
   if (current) {
     const windowStart = parseTime(run.current.window_started), configStart = parseTime(run.current.started);
-    const windowRest = windowStart ? Math.max(0, W - (t - windowStart) / 1000) : W;
+    const CW = windowMax(run, current), windowRest = windowStart ? Math.max(0, CW - (t - windowStart) / 1000) : CW;
     upper += windowRest + 5;
-    estimate += Math.max(windowStart ? 0 : 5, perConfig - (t - configStart) / 1000);
+    estimate += current === BENIGN ? windowRest + 5 : Math.max(windowStart ? 0 : 5, perConfig - (t - configStart) / 1000);
     estimate = Math.min(estimate, upper);
   }
   return {estimate: t + estimate * 1000, upper: t + upper * 1000};
@@ -208,8 +223,9 @@ function renderTimes() {
 
 function renderWindowMeter() {
   const run = state.run, fill = $("window-fill"), label = $("window-label");
-  if (!fill || !run?.current?.window_started || !run.timing?.wartime_duration) return;
-  const elapsed = (now() - parseTime(run.current.window_started)) / 1000, W = run.timing.wartime_duration;
+  const W = run?.current ? windowMax(run, run.current.name) : null;
+  if (!fill || !run?.current?.window_started || !W) return;
+  const elapsed = (now() - parseTime(run.current.window_started)) / 1000;
   fill.style.width = `${Math.min(100, 100 * elapsed / W)}%`;
   label.textContent = `window ${TF.fmtDuration(elapsed)} of max ${TF.fmtDuration(W)}`;
 }
@@ -238,7 +254,8 @@ function renderKPIs() {
   $("k-exfil-bar").style.width = `${ex ? ex.percent : 0}%`;
   $("k-exfil-bar").classList.toggle("done", !!ex?.saved);
   $("k-exfil-sub").textContent = ex ? (ex.saved ? "✓ file saved" : ex.file_size ? `of ${TF.fmtBytes(ex.file_size)}` : "waiting for init")
-                                    : "no transfer running";
+                                    : run.current?.name === BENIGN ? "benign-only window · no tunnel traffic"
+                                    : isBenignOnly(run) ? "benign-only run · no tunnel traffic" : "no transfer running";
   if (s) {
     $("k-qps").textContent = TF.fmtCompact(s.dns.qps);
     const share = s.dns.queries ? 100 * s.dns.tunnel_queries / s.dns.queries : 0;
@@ -281,12 +298,14 @@ function renderCurrent() {
   const head = `<tr><th>Configuration</th><th class="l">Status</th><th class="l">Ended by</th><th>Tunnel q.</th><th class="l">Net / file</th>`
     + dets.map(d => `<th><span class="swatch" style="background:${detectorColor(d)}"></span>${TF.esc(d)}</th>`).join("") + `<th class="l"></th></tr>`;
   const rowHTML = ({name, status, entry}) => {
-    const f1 = new Map((entry?.detectors || []).map(d => [d.detector, d.f1]));
+    // The benign-only window has no tunnel traffic: show its FPR instead of F1.
+    const benign = name === BENIGN, key = benign ? "fpr" : "f1";
+    const f1 = new Map((entry?.detectors || []).map(d => [d.detector, d[key]]));
     const reason = entry?.reason && status !== "completed" ? ` <span class="muted">${TF.esc(entry.reason)}</span>` : "";
     return `<tr class="${run.current?.name === name ? "is-current" : ""}"><td>${TF.esc(name)}</td><td class="l">${statusHTML(status)}${reason}</td>
       <td class="l">${TF.esc(endedBy(entry))}</td><td>${entry?.dataset_statistics?.tunnel_queries ?? "–"}</td>
       <td class="l">${netVolume(entry?.dataset_statistics)}</td>
-      ${dets.map(d => `<td>${f1.get(d) != null ? f1.get(d).toFixed(3) : "–"}</td>`).join("")}
+      ${dets.map(d => `<td>${f1.get(d) != null ? (benign ? `<span class="muted small">FPR</span> ${fmtFpr(f1.get(d))}` : f1.get(d).toFixed(3)) : "–"}</td>`).join("")}
       <td class="l">${entry ? `<a href="/runs/${encodeURIComponent(state.runId)}/${TF.esc(entry.file)}" target="_blank" rel="noopener">json</a>` : ""}</td></tr>`;
   };
   const body = groups.map(g => {
@@ -332,9 +351,10 @@ function renderResources() {
   TF.line($("chart-mem"), {label: "Memory per container", height: 180, emptyText: "Waiting for metrics…", series: build("mem"), alwaysLegend: true});
 }
 
-// Finished configurations in group order, with the group boundaries (null for one group).
+// Finished tunnel configurations in group order, with the group boundaries (null for one
+// group). The benign-only window is left out (see renderBenign).
 function finishedConfigs(run) {
-  const finished = new Map((run.configs || []).filter(c => (c.detectors || []).length).map(c => [c.name, c]));
+  const finished = new Map((run.configs || []).filter(c => (c.detectors || []).length && c.name !== BENIGN).map(c => [c.name, c]));
   const configs = [], sections = [];
   for (const g of configGroups(run)) {
     const start = configs.length;
@@ -542,6 +562,74 @@ function renderBreakdown() {
   TF.hbars($("top-domains"), (s?.top_domains || []).map(([d, n, tunnel]) => ({label: d, value: n, note: tunnel ? "tunnel" : ""})));
 }
 
+// Info box of the benign-only window: window figures and each detector's false positives,
+// next to its mean FPR over the finished tunnel configurations (under adversarial load).
+function renderBenign() {
+  const run = state.run, show_ = hasBenignWindow(run), only = isBenignOnly(run);
+  $("benign-card").hidden = !show_;
+  // A benign-only run has no tunnel windows: hide what only tunnel traffic fills.
+  for (const id of ["results-card", "heat-card", "detectors-card", "tradeoff-card", "sweeps-card"]) $(id).hidden = only;
+  if (!show_) return;
+  const entry = (run.configs || []).find(c => c.name === BENIGN);
+  const stats = entry?.dataset_statistics || {}, live = run.current?.name === BENIGN;
+  const {configs: tunnel} = finishedConfigs(run);
+  const rows = [...(entry?.detectors || [])].sort((a, b) =>
+    (a.fpr ?? Infinity) - (b.fpr ?? Infinity) || a.detector.localeCompare(b.detector));
+  const fprs = rows.map(r => r.fpr).filter(v => v != null);
+  const maxFpr = Math.max(0, ...fprs), P = run.timing?.peacetime_duration || 0;
+  const tunnelFpr = d => tunnel.length ? meanOf(tunnel, d, "fpr") : null;
+  const windowSec = stats.window_seconds
+    ?? (live && run.current.window_started ? (now() - parseTime(run.current.window_started)) / 1000 : null);
+  const kpi = (label, value, sub = "") => `<div class="mini-kpi"><div class="kpi-label">${label}</div>
+    <div class="kpi-value mono">${value}</div><div class="kpi-sub ellipsis">${sub}</div></div>`;
+  const meanFpr = fprs.length ? fprs.reduce((a, b) => a + b, 0) / fprs.length : null;
+  const meanTunnel = rows.map(r => tunnelFpr(r.detector)).filter(v => v != null);
+  const status = entry ? endedBy(entry) : live ? "running" : run.status === "running" ? "pending" : "not run";
+  $("benign-kpis").innerHTML =
+      kpi("Window", show(windowSec, TF.fmtDuration), TF.esc(status))
+    + kpi("Queries", show(stats.total_queries, TF.fmtCompact), stats.total_queries != null && windowSec
+          ? `${(stats.total_queries / windowSec).toFixed(1)} / s` : "")
+    + kpi("Benign domains", show(stats.unique_domains, TF.fmtCompact), "registered domains seen")
+    + kpi("Allowlist", P > 0 ? "peacetime" : "global only", P > 0 ? `learned over ${TF.fmtDuration(P)}` : "no peacetime")
+    + kpi("Lowest FPR", rows.length ? fmtFpr(rows[0].fpr ?? 0) : "–", rows.length ? TF.esc(rows[0].detector) : "")
+    + kpi("Mean FPR", show(meanFpr, fmtFpr), meanTunnel.length
+          ? `with tunnel ${fmtFpr(meanTunnel.reduce((a, b) => a + b, 0) / meanTunnel.length)}`
+          : rows.length ? `over ${rows.length} detector${rows.length === 1 ? "" : "s"}` : "");
+  const notes = [];
+  if (!entry) notes.push(live ? "The window is running; the false positives per detector appear when it ends."
+    : run.status === "running" ? "The benign-only window runs after peacetime, before the tunnel windows."
+    : `No results for this window${run.status_reason ? `: ${run.status_reason}` : "."}`);
+  else if (entry.status !== "completed")
+    notes.push(`Window ${entry.status}${entry.reason ? `: ${entry.reason}` : ""}. The figures cover the partial window.`);
+  if (stats.tunnel_queries > 0)
+    notes.push(`${stats.tunnel_queries} queries to tunneling domains were seen in this window; they count as tunnel traffic, not as false positives.`);
+  $("benign-note").hidden = !notes.length;
+  $("benign-note").className = `note${stats.tunnel_queries > 0 || entry?.status === "failed" ? " warn" : ""}`;
+  $("benign-note").textContent = notes.join(" ");
+  if (!rows.length) { $("benign-table").innerHTML = ""; return; }
+  const withTunnel = !only;
+  const sw = d => `<span class="swatch" style="background:${detectorColor(d)}"></span>`;
+  const file = `/runs/${encodeURIComponent(state.runId)}/${TF.esc(entry.file)}`;
+  $("benign-table").innerHTML = `<tr><th>#</th><th class="l">Detector</th><th>FPR benign-only</th>`
+    + (withTunnel ? `<th title="mean FPR over the finished tunnel configurations">FPR with tunnel</th><th title="with tunnel minus benign-only">Change</th>` : "")
+    + `<th title="falsely flagged registered domains">FP domains</th><th title="registered domains without an alarm">TN domains</th>
+       <th title="falsely flagged domains per hour of the window">FP / h</th>
+       <th title="detector allowlist: peacetime alarms plus the global allowlist">Allowlist</th><th class="l">False alarms</th></tr>`
+    + rows.map((r, i) => {
+      const sample = r.false_positives_sample || [], more = (r.fp || 0) - sample.length;
+      const list = r.fp ? `${TF.esc(sample.join(", "))}${more > 0 ? ` <a href="${file}" target="_blank" rel="noopener">+${more} more</a>` : ""}`
+                        : '<span class="muted">none</span>';
+      const meter = `<span class="mini-meter" aria-hidden="true"><i style="width:${maxFpr ? 100 * (r.fpr || 0) / maxFpr : 0}%"></i></span>`;
+      const tf = tunnelFpr(r.detector), change = tf != null && r.fpr != null ? tf - r.fpr : null;
+      return `<tr><td>${i + 1}</td><td class="l">${sw(r.detector)}${TF.esc(r.detector)}</td>
+        <td class="mono">${show(r.fpr, fmtFpr)}${meter}</td>`
+        + (withTunnel ? `<td class="mono">${show(tf, fmtFpr)}</td><td class="mono">${show(change, v => (v > 0 ? "+" : "") + fmtFpr(v))}</td>` : "")
+        + `<td class="mono">${show(r.fp, String)}</td><td class="mono">${show(r.tn, String)}</td>
+        <td class="mono">${show(r.fp_domains_per_hour, v => v.toFixed(1))}</td><td class="mono">${show(r.allowlist_size, TF.fmtCompact)}</td>
+        <td class="fp-list">${list}</td></tr>`;
+    }).join("");
+}
+
 function renderLog() {
   const el = $("log");
   const raw = state.log.text[state.log.tab]
@@ -554,7 +642,7 @@ function renderLog() {
 
 function renderAll() {
   if (!state.run) return;
-  renderTop(); renderKPIs(); renderTimes(); renderCurrent();
+  renderTop(); renderKPIs(); renderTimes(); renderCurrent(); renderBenign();
   renderTraffic(); renderResources(); renderResults(); renderBreakdown();
   renderHeat(); renderDetectors(); renderTradeoff(); renderSweeps(); renderRecords();
 }
@@ -565,6 +653,7 @@ function renderEmpty() {
   for (const id of ["chart-dns", "chart-cpu", "chart-mem", "chart-results", "chart-heat", "chart-tradeoff", "chart-sweep",
                     "chart-qtypes", "chart-atypes", "chart-qlen", "chart-entropy"]) TF.empty($(id), "No data yet");
   $("detector-view").hidden = true;
+  $("benign-card").hidden = true;
 }
 
 /* ---------- loop and controls ---------- */

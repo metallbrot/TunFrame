@@ -560,6 +560,46 @@ def wartime_end_info(counts: dict, watcher: "TransferWatcher" = None) -> dict:
     }
 
 
+BENIGN_WINDOW = "benign_only"  # name of the benign-only window and its results file
+
+
+def benign_window_duration(cfg: dict) -> float:
+    """Length of the benign-only window in seconds; 0 means no such window.
+
+    The benign-only window (``timing.benign_only_duration``, minutes) runs
+    between peacetime and the tunnel windows. It is a wartime window without
+    tunnel traffic: only the benign and wildcard replays run, so every alarm
+    is a false positive and it measures the FPR without adversarial load.
+
+    Raises:
+        ValueError: If the duration is negative.
+    """
+    minutes = float(cfg_safe_get(cfg, ["timing", "benign_only_duration"], 0) or 0)
+    if minutes < 0:
+        raise ValueError("timing.benign_only_duration must be >= 0")
+    return minutes * 60
+
+
+def tunnel_windows_planned(cfg: dict) -> bool:
+    """Whether tunnel windows follow peacetime (and the benign-only window).
+
+    False only for a benign-only run: a benign-only window and neither tunnel
+    replay nor DNSExfiltrator. Without a benign-only window the wartime window
+    always runs, since tunnel traffic may also come from a tool started by hand.
+    """
+    if not benign_window_duration(cfg):
+        return True
+    return bool(cfg_safe_get(cfg, ["traffic", "tunnel", "replay"], False)
+                or cfg_safe_get(cfg, ["dnsexfiltrator", "enabled"], False))
+
+
+def add_false_alarm_rates(results: list, window_seconds: float) -> None:
+    """Add ``fp_domains_per_hour``: falsely flagged domains per hour of the window."""
+    hours = (window_seconds or 0) / 3600
+    for result in results or []:
+        result["fp_domains_per_hour"] = (result.get("fp") or 0) / hours if hours > 0 else None
+
+
 def add_leak_shares(results: list, counts: dict) -> None:
     """Add ULV% and DLV% to every detector result.
 
@@ -713,7 +753,7 @@ def build_and_save_metadata(
             **{key: counts[key] for key in (
                 "tunnel_net_up_bytes", "tunnel_data_queries", "tunnel_init_queries", "tunnel_dilution_queries",
                 "tunnel_retried_queries", "exfil_file_bytes", "exfil_file_bytes_server", "init_encoding",
-                "source_file_bytes", "net_volume_check") if key in counts},
+                "source_file_bytes", "net_volume_check", "window_seconds") if key in counts},
             "unique_domains": len(alldomains),
             "logfile": str(LOGFILE)
         },
@@ -722,6 +762,7 @@ def build_and_save_metadata(
             "detector_path": str(DETECTOR_PATH)
         },
         "complete_config": cfg,
+        "window_type": "benign_only" if config_name == BENIGN_WINDOW else "tunnel",
         "dnsexfiltrator_config": dnsexfil_config,
         "run_info": get_run_info(),
         "run_status": {"status": status, "reason": status_reason},
@@ -1164,30 +1205,46 @@ def run_setup(cfg: dict):
     
     # Get DNSExfiltrator configurations to calculate total duration, and make
     # sure every config domain is routed to the simulated DNS hierarchy.
+    # Optional benign-only window between peacetime and the tunnel windows.
+    benign_seconds = benign_window_duration(cfg)
+    tunnel_windows = tunnel_windows_planned(cfg)
     dnsexfil_configs = get_dnsexfiltrator_configs(cfg)
     validate_dnsexfil_domains(dnsexfil_configs, tunneling_domains)
-    report.set_planned_configs([c['name'] for c in dnsexfil_configs] or ["wartime"])
-    report.update(config_groups=[
+    if benign_seconds and any(c['name'] == BENIGN_WINDOW for c in dnsexfil_configs):
+        raise ValueError(f"DNSExfiltrator configuration name '{BENIGN_WINDOW}' is reserved for the benign-only window")
+    tunnel_names = [c['name'] for c in dnsexfil_configs] or (["wartime"] if tunnel_windows else [])
+    report.set_planned_configs(([BENIGN_WINDOW] if benign_seconds else []) + tunnel_names)
+    benign_group = [{"name": BENIGN_WINDOW, "group": "Benign-only", "kind": "benign_only",
+                     "parameter": None, "value": None}] if benign_seconds else []
+    report.update(mode="tunnel" if tunnel_windows else "benign_only", config_groups=benign_group + [
         {"name": c['name'], "group": c.get('_group', 'Baseline'), "kind": c.get('_kind', 'baseline'),
          "parameter": c.get('_parameter'), "value": c.get('_value')}
         for c in dnsexfil_configs
     ])
-    report.update(timing={"wartime_duration": wartime_duration, "peacetime_duration": peacetime_duration})
+    report.update(timing={"wartime_duration": wartime_duration, "peacetime_duration": peacetime_duration,
+                          "benign_only_duration": benign_seconds})
     
     # Calculate total estimated duration
     if dnsexfil_configs:
         total_estimated_duration = peacetime_duration + (wartime_duration * len(dnsexfil_configs))
     else:
-        total_estimated_duration = peacetime_duration + wartime_duration
+        total_estimated_duration = peacetime_duration + (wartime_duration if tunnel_windows else 0)
+    total_estimated_duration += benign_seconds
     
     banner("EXPERIMENT SETUP")
     logger.info(f"[+] Experiment: {cfg_safe_get(cfg, ['global', 'name'], '')}")
     logger.info(f"[+] Peacetime Duration: {format_duration(peacetime_duration)}")
+    if benign_seconds:
+        logger.info(f"[+] Benign-only window: {format_duration(benign_seconds)} "
+                    + ("(before the tunnel windows)" if tunnel_windows else "(benign-only run: no tunnel windows)"))
+        if not (cfg_safe_get(cfg, ["traffic", "benign", "enabled"], False)
+                or cfg_safe_get(cfg, ["traffic", "wildcard", "enabled"], False)):
+            logger.warning("[!] Benign-only window without benign or wildcard replay: only external DNS traffic is evaluated")
     
     if dnsexfil_configs:
         logger.info(f"[+] Wartime Duration (per config): {format_duration(wartime_duration)}")
         logger.info(f"[+] Number of DNSExfiltrator configs: {len(dnsexfil_configs)}")
-    else:
+    elif tunnel_windows:
         logger.info(f"[+] Wartime Duration: {format_duration(wartime_duration)}")
     
     logger.info(f"[+] Total Estimated Duration: {format_duration(total_estimated_duration)}")
@@ -1331,12 +1388,14 @@ STOP_REASON_LABELS = {
 }
 
 
-def show_results(results, config_name=None, peacetime_logcount=0, wartime_duration=None, stop_reason=None):
+def show_results(results, config_name=None, peacetime_logcount=0, wartime_duration=None, stop_reason=None,
+                 benign_only=False):
     """Log a compact results table for one wartime window.
 
     Full per-detector results (alarm lists, leakage, timing) are in the
     window's file under ``configs/``; the console shows the headline numbers
-    and up to five missed and falsely flagged domains per detector.
+    and up to five missed and falsely flagged domains per detector. A
+    benign-only window (``benign_only``) shows false-positive figures only.
     """
     if not results:
         logger.info("\n[!] No results to display")
@@ -1351,6 +1410,24 @@ def show_results(results, config_name=None, peacetime_logcount=0, wartime_durati
     if stop_reason:
         details.append(STOP_REASON_LABELS.get(stop_reason, f"ended: {stop_reason}"))
     banner(title + (f"  ({', '.join(details)})" if details else ""), width=96)
+
+    if benign_only:
+        logger.info(f"{'Detector':<18} {'FPR':>10} {'FP':>6} {'TN':>8} {'FP/h':>8} {'Allowlist':>10} {'Runtime':>8}")
+        logger.info("-" * 96)
+        sorted_results = sorted(results, key=lambda r: (r.get('fpr', 0), r.get('detector_name', '')))
+        for r in sorted_results:
+            per_hour = r.get('fp_domains_per_hour')
+            logger.info(
+                f"{r.get('detector_name', 'Unknown')[:18]:<18} {r.get('fpr', 0):>10.6f} {r.get('fp', 0):>6} "
+                f"{r.get('tn', 0):>8} {(f'{per_hour:.1f}' if per_hour is not None else '-'):>8} "
+                f"{r.get('allowlist_size', 0):>10} {r.get('runtime', 0):>7.1f}s"
+            )
+        for r in sorted_results:
+            if r.get('false_positives_list'):
+                logger.info(f"  {r.get('detector_name')}: false alarms {_short_list(r['false_positives_list'])}")
+        logger.info("(benign-only window: no tunnel traffic, every alarm is a false positive)")
+        logger.info("")
+        return
 
     logger.info(f"{'Detector':<18} {'Prec':>6} {'Recall':>6} {'F1':>6} {'FPR':>8} "
                 f"{'TP':>4} {'FP':>5} {'FN':>4} {'Leak up':>11} {'Leak down':>11} {'Runtime':>8}")
@@ -1374,7 +1451,7 @@ def show_results(results, config_name=None, peacetime_logcount=0, wartime_durati
 
 
 def log_run_summary(report) -> None:
-    """Log one line per configuration with each detector's F1 score."""
+    """Log one line per configuration with each detector's F1 score (FPR for the benign-only window)."""
     configs = report.state.get("configs", [])
     detectors = []
     for config in configs:
@@ -1389,13 +1466,16 @@ def log_run_summary(report) -> None:
     logger.info(f"{'Configuration':<28} {'Status':<12}" + "".join(f" {d[:10]:>10}" for d in detectors))
     logger.info("-" * 96)
     for config in configs:
-        f1 = {row["detector"]: row.get("f1") for row in config.get("detectors", [])}
-        cells = "".join(f" {f1[d]:>10.3f}" if f1.get(d) is not None else f" {'-':>10}" for d in detectors)
+        # The benign-only window has no tunnel traffic: its F1 is meaningless, show its FPR.
+        key, fmt = ("fpr", ">10.6f") if config["name"] == BENIGN_WINDOW else ("f1", ">10.3f")
+        values = {row["detector"]: row.get(key) for row in config.get("detectors", [])}
+        cells = "".join(f" {values[d]:{fmt}}" if values.get(d) is not None else f" {'-':>10}" for d in detectors)
         logger.info(f"{config['name'][:28]:<28} {config['status']:<12}{cells}")
         if config.get("reason") and config["status"] != "completed":
             logger.info(f"  {config['reason']}")
     if detectors:
-        logger.info("(values: F1 per detector)")
+        logger.info(f"(values: F1 per detector; FPR for {BENIGN_WINDOW})"
+                    if any(c["name"] == BENIGN_WINDOW for c in configs) else "(values: F1 per detector)")
 
 
 def run_wartime_phase(
@@ -1421,7 +1501,10 @@ def run_wartime_phase(
     is evaluated, saved with status ``interrupted``, and the interrupt is then
     re-raised.
     """
-    banner("WARTIME PHASE")
+    benign_seconds = benign_window_duration(cfg)
+    tunnel_windows = tunnel_windows_planned(cfg)
+    if not benign_seconds:
+        banner("WARTIME PHASE")
 
     tunneling_enabled = bool(cfg_safe_get(cfg, ["traffic", "tunnel", "replay"], False))
     tunneling_pcap = cfg_safe_get(cfg, ["traffic", "tunnel", "pcap"], "")
@@ -1430,11 +1513,6 @@ def run_wartime_phase(
     stop_on_transfer = bool(cfg_safe_get(cfg, ['dnsexfiltrator', 'stop_on_transfer_complete'], True))
 
     all_results = results_sink if results_sink is not None else []
-
-    # Never truncate the log while the collector writes to it: record where
-    # wartime starts and read only from this offset.
-    wartime_offset = log_end_offset(LOGFILE)
-
 
     # Benign/wildcard background traffic. These are started and stopped per
     # wartime window (managed_replay_*), each beginning at the packet after the
@@ -1466,6 +1544,124 @@ def run_wartime_phase(
             managed_replay_start("benign", benign_wartime_pcap, benign_pps)
         if wildcard_enabled:
             managed_replay_start("wildcard", wildcard_wartime_pcap, wildcard_pps)
+
+    # Window numbering for the dashboard: the benign-only window comes first.
+    index_offset = 1 if benign_seconds else 0
+    tunnel_window_count = (len(dnsexfil_configs) if dnsexfil_enabled and dnsexfil_configs
+                           else (1 if tunnel_windows else 0))
+    total_windows = index_offset + tunnel_window_count
+
+    def run_single_window(name: str, duration: float, window_file: Path, benign: bool,
+                          log_offset: int, index: int):
+        """Run and save one window outside the DNSExfiltrator loop.
+
+        Used for the benign-only window (``benign``: no tunnel traffic, every
+        alarm is a false positive) and for the wartime window of replay mode
+        or external tunnel traffic. Both see the same benign/wildcard segment.
+        """
+        if benign:
+            logger.info(f"[+] Benign-only window started (no tunnel traffic): running for {format_duration(duration)}...")
+        else:
+            logger.info(f"[+] Wartime started: Running for {format_duration(duration)}...")
+        set_phase("wartime", "benign only" if benign else "")
+
+        # Fresh generator, starting where this window began in the log
+        window_log_generator = readjson(str(LOGFILE), start_offset=log_offset)
+
+        RUN_CONTROL.open_window()
+        war_timer = PhaseTimer(wartime_stop_event, duration).start()
+        REPORT.update(current={"name": name, "index": index, "total": total_windows,
+                               "started": datetime.now().isoformat(timespec="seconds"),
+                               "window_started": datetime.now().isoformat(timespec="seconds"),
+                               **({"parameters": {"traffic": "benign and wildcard only (no tunnel)"}} if benign else {})})
+
+        # Start benign/wildcard for this window, from the wartime segment start.
+        start_background_replays()
+        window_start = datetime.now()
+
+        # Run the window (blocks until its stop event is set or all tunnels are
+        # detected). The TN/FPR universe is the set of domains seen in this window only.
+        try:
+            results, logcount, tunnel_count, seen_tunnels, window_domains, counts = run_wartime(
+                active_detectors, window_log_generator, tunneling_domains_set, global_allowlist,
+                expansion_factor=float(cfg_safe_get(cfg, ['traffic', 'tunnel', 'expansion_factor'], 1) or 1),
+            )
+        finally:
+            war_timer.cancel()
+            RUN_CONTROL.close_window()
+            managed_replay_stop_all()
+        set_current()
+        alldomains.update(window_domains)
+
+        end_timestamp = datetime.now()
+        counts["window_seconds"] = round((end_timestamp - window_start).total_seconds(), 1)
+        if benign:
+            add_false_alarm_rates(results, counts["window_seconds"])
+            if counts.get("tunnel_queries"):
+                logger.warning(f"[!] Benign-only window saw {counts['tunnel_queries']} queries to tunneling domains; "
+                               "they are evaluated as tunnel traffic")
+
+        all_results.append({
+            'config_name': name if benign else None,
+            'results': results,
+            'logcount': logcount,
+            'tunnel_count': tunnel_count
+        })
+        show_results(results, config_name=name if benign else None, wartime_duration=duration,
+                     stop_reason=counts.get("stop_reason"), benign_only=benign)
+        build_and_save_metadata(
+            results_file=window_file,
+            results=results,
+            logcount=logcount,
+            tunnel_count=tunnel_count,
+            seen_tunnels=seen_tunnels,
+            alldomains=window_domains,
+            start_timestamp=start_timestamp,
+            end_timestamp=end_timestamp,
+            wartime_duration=duration,
+            peacetime_duration=peacetime_duration,
+            tunneling_domains_set=tunneling_domains_set,
+            tunneling_enabled=tunneling_enabled and not benign,
+            tunneling_pcap=tunneling_pcap,
+            tunneling_pps=tunneling_pps,
+            server_ip=server_ip,
+            public_resolver=public_resolver,
+            cfg=cfg,
+            counts=counts,
+            config_name=name,
+            wartime_end=wartime_end_info(counts),
+            status="interrupted" if counts.get("interrupted") or counts.get("stop_reason") in USER_END_REASONS else "completed",
+            status_reason=("Ctrl+C during wartime; partial window" if counts.get("interrupted")
+                           else USER_END_REASONS.get(counts.get("stop_reason"), ""))
+        )
+        if counts.get("interrupted"):
+            raise KeyboardInterrupt
+
+    # Benign-only window (optional): peacetime -> benign-only -> tunnel windows.
+    if benign_seconds:
+        banner("BENIGN-ONLY WINDOW")
+        if RUN_CONTROL.stop_requested.is_set():
+            save_status_result(cfg, BENIGN_WINDOW, "skipped", USER_END_REASONS["user_stop"])
+        else:
+            # Behave like the tunnel windows that follow: every DNSExfiltrator
+            # configuration starts from a reset detector (allowlists kept), the
+            # replay-mode window continues from peacetime.
+            if dnsexfil_enabled and dnsexfil_configs:
+                for detector in active_detectors:
+                    detector.reset()
+            run_single_window(BENIGN_WINDOW, benign_seconds, get_report(cfg).config_file(BENIGN_WINDOW),
+                              True, log_end_offset(LOGFILE), 1)
+            # Alarms and counters of the benign-only window must not carry over
+            # into the tunnel window; detector state continues like live traffic.
+            for detector in active_detectors:
+                detector.reset(reset_state=False)
+        if not tunnel_windows:
+            return alldomains, all_results
+        banner("WARTIME PHASE")
+
+    # Never truncate the log while the collector writes to it: record where
+    # wartime starts and read only from this offset.
+    wartime_offset = log_end_offset(LOGFILE)
 
     # Start tunnel traffic if enabled and DNSExfiltrator is not
     if tunneling_enabled and not dnsexfil_enabled:
@@ -1658,7 +1854,7 @@ def run_wartime_phase(
             factor = round(config_expansion_factor(config), 3)
             parameters['expansion_factor'] = (factor if config.get('expansion_factor') is not None
                                               else f"{factor:g} (from {config.get('encoding', '')})")
-            REPORT.update(current={"name": config_name, "index": config_idx + 1, "total": len(dnsexfil_configs),
+            REPORT.update(current={"name": config_name, "index": index_offset + config_idx + 1, "total": total_windows,
                                    "started": datetime.now().isoformat(timespec="seconds"), "window_started": None,
                                    "parameters": parameters})
             
@@ -2048,76 +2244,9 @@ def run_wartime_phase(
         
         logger.info(f"[+] Completed all {len(dnsexfil_configs)} DNSExfiltrator configurations")
     else:
-        # Standard wartime without DNSExfiltrator
-        logger.info(f"[+] Wartime started: Running for {format_duration(wartime_duration)}...")
-        set_phase("wartime")
-        
-        # Fresh generator for wartime, starting where wartime began in the log
-        wartime_log_generator = readjson(str(LOGFILE), start_offset=wartime_offset)
-        
-        RUN_CONTROL.open_window()
-        war_timer = PhaseTimer(wartime_stop_event, wartime_duration).start()
-        REPORT.update(current={"name": "wartime", "index": 1, "total": 1,
-                               "started": datetime.now().isoformat(timespec="seconds"),
-                               "window_started": datetime.now().isoformat(timespec="seconds")})
+        # Standard wartime without DNSExfiltrator (replay mode or external traffic)
+        run_single_window("wartime", wartime_duration, results_file, False, wartime_offset, index_offset + 1)
 
-        # Start benign/wildcard for this window, from the wartime segment start.
-        start_background_replays()
-
-        # Run wartime (will block until stop event is set or all tunnels detected).
-        # The TN/FPR universe is the set of domains seen in this wartime only.
-        try:
-            results, logcount, tunnel_count, seen_tunnels, alldomains, counts = run_wartime(
-                active_detectors, wartime_log_generator, tunneling_domains_set, global_allowlist,
-                expansion_factor=float(cfg_safe_get(cfg, ['traffic', 'tunnel', 'expansion_factor'], 1) or 1),
-            )
-        finally:
-            war_timer.cancel()
-            RUN_CONTROL.close_window()
-            managed_replay_stop_all()
-        set_current()
-
-        end_timestamp = datetime.now()
-        
-        # Store results
-        all_results.append({
-            'config_name': None,
-            'results': results,
-            'logcount': logcount,
-            'tunnel_count': tunnel_count
-        })
-        
-        # Show results
-        show_results(results, wartime_duration=wartime_duration, stop_reason=counts.get("stop_reason"))
-        
-        # Build metadata and save results
-        build_and_save_metadata(
-            results_file=results_file,
-            results=results,
-            logcount=logcount,
-            tunnel_count=tunnel_count,
-            seen_tunnels=seen_tunnels,
-            alldomains=alldomains,
-            start_timestamp=start_timestamp,
-            end_timestamp=end_timestamp,
-            wartime_duration=wartime_duration,
-            peacetime_duration=peacetime_duration,
-            tunneling_domains_set=tunneling_domains_set,
-            tunneling_enabled=tunneling_enabled,
-            tunneling_pcap=tunneling_pcap,
-            tunneling_pps=tunneling_pps,
-            server_ip=server_ip,
-            public_resolver=public_resolver,
-            cfg=cfg,
-            counts=counts,
-            wartime_end=wartime_end_info(counts),
-            status="interrupted" if counts.get("interrupted") or counts.get("stop_reason") in USER_END_REASONS else "completed",
-            status_reason=("Ctrl+C during wartime; partial window" if counts.get("interrupted")
-                           else USER_END_REASONS.get(counts.get("stop_reason"), ""))
-        )
-        if counts.get("interrupted"):
-            raise KeyboardInterrupt
-    
     return alldomains, all_results
 
 
@@ -2148,6 +2277,7 @@ def _show_partial_results(all_experiment_results: list, peace_logcount: int, war
             config_name=result_entry.get('config_name'),
             peacetime_logcount=peace_logcount,
             wartime_duration=wartime_duration,
+            benign_only=result_entry.get('config_name') == BENIGN_WINDOW,
         )
 
 
