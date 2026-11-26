@@ -106,7 +106,7 @@ Each replay is started once per run and never restarted, so wartime sees the par
 ## Adding a Detection Method
 
 1. Create a new directory under `detection/detectors/` named after your method, containing `detector.py`.
-2. In `detector.py`, subclass `Detector` from `detection/detector_base/detector_base.py` and implement `detect(logline)`: add the registered domain to `self.alarms` when it should raise an alarm.
+2. In `detector.py`, subclass `Detector` from `detection/detector_base/detector_base.py` and implement `detect(logline)`: add the registered domain to `self.alarms` when it should raise an alarm. Once a domain is in `self.alarms`, its further lines in the same phase no longer reach `detect()` (counted as `alarmed_lines_skipped`); alarms are cleared after peacetime and at the start of every window, so the next phase inspects the domain again. Lines of allowlisted domains never reach `detect()` either.
 3. Optionally override `on_phase_reset()` to clear internal state (windows, trackers) between DNSExfiltrator configurations.
 
 Only `Detector` subclasses defined in `detector.py` are loaded. Select detectors with `detectors.active`.
@@ -291,7 +291,7 @@ The dashboard listens on `127.0.0.1` only and lists every run directory, so earl
 - **Detectors:** a ranking of all detectors (means over the finished configurations), by default least exfiltrated volume (ULV %) first, then F1; click a column header to sort by it (again to reverse). Selecting a detector shows its key figures, precision/recall/F1 and leaked share per configuration, and its full per-configuration table.
 - **Detection trade-off and sweeps:** recall over FPR (one point per detector and configuration) and any metric (own selector) over each sweep's parameter values.
 - **DNS breakdown and records:** response codes, the most queried registered domains (tunnel domains marked), and, benign vs. tunnel, the shares of query types, answer record types, query name lengths and subdomain entropy, plus average query and response sizes.
-- **Logs:** the run log and the DNSExfiltrator server and client output of the running configuration.
+- **Logs:** the run log and the DNSExfiltrator server and client output of the run. The tool logs are cleared at the start of every run and copied into the run directory at its end, so a finished run shows its own output. The dashboard switches to a newly started run unless an older run was picked in the run selector.
 - **Controls:** *Skip configuration* evaluates the running window up to now, saves it as `interrupted` and continues with the next one; *Stop run* does the same and skips all remaining configurations. Both ask for confirmation. Requests carry a token embedded in the page and are only accepted from the dashboard's own origin; the run picks them up from `control.json` in its directory.
 
 The metrics come from `metrics.jsonl`, which `main.py` writes into the run directory every two seconds (DNS rates and record details from the collector log, transfer progress from the server log, `docker stats`).
@@ -320,6 +320,8 @@ results/<name>_<timestamp>/
 ├── run.log               # console log of the run
 ├── metrics.jsonl         # live metrics every 2 s: DNS rates, response codes, top domains, record types, transfer progress, CPU/memory
 ├── control.json          # requests from the dashboard (skip configuration, stop run), if any
+├── exfil-server.log      # DNSExfiltrator server output of the run (copied at the end), if any
+├── exfil-client.log      # DNSExfiltrator client output of the run (copied at the end), if any
 ├── configs/<config>.json # full results of one wartime window (one per DNSExfiltrator configuration; benign_only.json for the benign-only window)
 ├── charts/*.png          # bars and heatmaps per metric (incl. ULV %), recall vs. FPR, sweeps; light + -dark
 └── report.html           # static report with the charts and the tables behind them

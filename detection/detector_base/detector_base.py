@@ -52,6 +52,7 @@ class Detector(ABC):
         self.total_process_time = 0.0
         self.processed_lines = 0
         self.detect_calls = 0
+        self.alarmed_lines_skipped = 0
         self.tunneling_missed = 0
         self.tunneling_missed_responses = 0
         self.lv_up = 0
@@ -75,7 +76,24 @@ class Detector(ABC):
 
         alarm_count_pre = len(self.alarms)
 
-        if domain not in self.allowlist:
+        if domain in self.allowlist:
+            if istunnel:
+                # Allowlisted tunneling traffic never reaches detect() and can never
+                # raise an alarm. Account for it separately so the run stays fully
+                # accounted; the detection decision itself is unchanged.
+                self.allowlisted_tunnel_lines += 1
+                if is_response(logline):
+                    self.allowlisted_tunnel_responses += 1
+                    self.allowlisted_tunnel_lv_down += answer_payload_bytes(logline)
+                else:
+                    self.allowlisted_tunnel_queries += 1
+                    self.allowlisted_tunnel_lv_up += query_payload_bytes(logline)
+        elif domain in self.alarms:
+            # Already flagged in this phase (alarms are cleared at every window
+            # start): the decision for this domain is final, so its further lines
+            # skip detect() and add neither runtime nor detector state.
+            self.alarmed_lines_skipped += 1
+        else:
             start = time.time()
             self.detect(logline)
             timediff = time.time() - start
@@ -91,18 +109,7 @@ class Detector(ABC):
                     # Uplink leakage: full encoded payload of the query name.
                     self.lv_up += query_payload_bytes(logline)
             self.total_process_time += timediff
-        elif istunnel:
-            # Allowlisted tunneling traffic never reaches detect() and can never
-            # raise an alarm. Account for it separately so the run stays fully
-            # accounted; the detection decision itself is unchanged.
-            self.allowlisted_tunnel_lines += 1
-            if is_response(logline):
-                self.allowlisted_tunnel_responses += 1
-                self.allowlisted_tunnel_lv_down += answer_payload_bytes(logline)
-            else:
-                self.allowlisted_tunnel_queries += 1
-                self.allowlisted_tunnel_lv_up += query_payload_bytes(logline)
-        
+
         self.processed_lines += 1
 
         if len(self.alarms) > alarm_count_pre:
@@ -221,6 +228,7 @@ class Detector(ABC):
             "avg_process_time_ms": avg_process_time * 1000,
             "processed_lines": self.processed_lines,
             "detect_calls": self.detect_calls,
+            "alarmed_lines_skipped": self.alarmed_lines_skipped,
             "total_loglines": total_loglines,
             
             # Tunneling-specific metrics

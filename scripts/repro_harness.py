@@ -594,6 +594,24 @@ main.REPORT = None
 main.RESULTS_DIR = _old_dir
 main.logger.setLevel(logging.ERROR)
 
+# A domain flagged in a phase skips detect() for the rest of that phase only.
+class FlagEverything(Detector):
+    def __init__(self):
+        super().__init__(); self.calls = 0
+    def detect(self, logline):
+        from detection.detector_base.feature_extraction import get_registered_domain
+        self.calls += 1; self.alarms.add(get_registered_domain(logline))
+_fe = FlagEverything()
+for q in ['a.tunnel.com', 'b.tunnel.com', 'x.example.org', 'c.tunnel.com']:
+    _fe.process_line(evt(q), q.endswith('tunnel.com'))
+_first = (_fe.calls, _fe.alarmed_lines_skipped, _fe.detect_calls, _fe.processed_lines, _fe.tunneling_missed)
+_fe.reset()
+_fe.process_line(evt('d.tunnel.com'), True)
+check("A1 alarmed domains skip detect() within a phase",
+      _first == (2, 2, 2, 4, 0) and (_fe.calls, _fe.alarmed_lines_skipped) == (3, 0),
+      "calls/skipped/detect_calls/processed/missed in phase 1 = %s; after reset detect() runs again: calls=%d skipped=%d"
+      % (_first, _fe.calls, _fe.alarmed_lines_skipped))
+
 # Benign-only window: peacetime -> benign-only (optional) -> tunnel windows; every alarm a false positive
 from detection.reporting import summarize_detectors
 from detection import report_charts as _rc_mod
