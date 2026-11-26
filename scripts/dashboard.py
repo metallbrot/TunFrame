@@ -209,16 +209,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
         which = query.get("which", [""])[0]
         if which not in TOOL_LOGS:
             return self._error(HTTPStatus.BAD_REQUEST, "which must be server or client")
-        # The tool logs are shared by all runs: a fresh read of a running
+        # The shared tool logs (cleared at every run start) belong to the run
+        # that is going; a finished run reads the copy main.py put into its
+        # directory, and shows nothing without one. A fresh read of a running
         # configuration starts at its own offset, otherwise at the tail.
-        current = (read_run(run_dir) or {}).get("current") or {}
-        start = current.get(f"{which}_log_offset")
+        state = read_run(run_dir) or {}
         offset = self._offset(query)
+        if state.get("status") != "running":
+            return self._text_chunk(run_dir / f"exfil-{which}.log", offset, LOG_CHUNK, clean=True)
+        start = (state.get("current") or {}).get(f"{which}_log_offset")
+        path = TOOL_LOGS[which]
         if offset < 0 and start is not None:
-            path = TOOL_LOGS[which]
             size = path.stat().st_size if path.exists() else 0
             offset = max(int(start), size - LOG_CHUNK)
-        return self._text_chunk(TOOL_LOGS[which], offset, LOG_CHUNK, clean=True)
+        return self._text_chunk(path, offset, LOG_CHUNK, clean=True)
 
     def _static(self, name: str):
         path = (STATIC_DIR / name).resolve()

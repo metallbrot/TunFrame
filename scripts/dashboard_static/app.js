@@ -47,6 +47,7 @@ const state = {
   metric: METRICS[0], heatMetric: METRICS[0], sweepMetric: METRICS[0], detector: null, sweep: null,
   rankSort: {key: "ulv_percent", dir: "asc"},
   showTable: false, lastControlId: null, timer: null,
+  followLatest: true,   // switch to a newly started run unless an older run was picked
 };
 
 /* ---------- helpers ---------- */
@@ -120,7 +121,10 @@ async function loadRuns() {
     return o;
   }));
   if (!state.runs.length) { state.runId = null; return; }
-  if (!state.runId || !state.runs.some(r => r.id === state.runId)) state.runId = state.runs[0].id;
+  if (!state.runId || !state.runs.some(r => r.id === state.runId) || (state.followLatest && state.runId !== state.runs[0].id)) {
+    state.runId = state.runs[0].id;
+    state.lastControlId = null;
+  }
   select.value = state.runId;
 }
 
@@ -633,7 +637,8 @@ function renderBenign() {
 function renderLog() {
   const el = $("log");
   const raw = state.log.text[state.log.tab]
-    || (state.log.tab === "run" ? "No log lines yet." : "No output from this tool for the running configuration yet.");
+    || (state.log.tab === "run" ? "No log lines yet."
+        : state.run?.status === "running" ? "No output from this tool in this run yet." : "No output from this tool in this run.");
   if (el.dataset.raw === raw) return;
   el.dataset.raw = raw;
   el.innerHTML = TF.ansiToHtml(raw);  // render the tools' ANSI colours
@@ -735,7 +740,11 @@ $("log-tabs").addEventListener("click", ev => {
   renderLog();
   if (state.runId) loadLog().catch(e => toast(`Dashboard: ${e.message}`));
 });
-$("run-select").addEventListener("change", ev => { state.runId = ev.target.value; state.lastControlId = null; tick(); });
+$("run-select").addEventListener("change", ev => {
+  state.runId = ev.target.value; state.lastControlId = null;
+  state.followLatest = state.runId === state.runs[0]?.id;   // picking the newest run follows new runs again
+  tick();
+});
 
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;

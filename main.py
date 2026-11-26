@@ -1283,6 +1283,7 @@ def run_setup(cfg: dict):
         LOGFILE.write_text("")
     else:
         LOGFILE.touch()
+    clear_tool_logs()
 
     write_docker_env(PROJECT_ROOT / (cfg_safe_get(cfg, ['traffic', 'pcap_path']) or './pcaps'))
     generate_all_configs(routed_domains, server_ip, public_resolver, CONFIG_TEMPLATE_DIR, DOCKER_PATH)
@@ -2268,11 +2269,39 @@ def run_wartime_phase(
     return alldomains, all_results
 
 
+# DNSExfiltrator output of a run, copied into its run directory at the end
+# (the dashboard's Exfil server / Exfil client tabs read these for finished runs).
+RUN_TOOL_LOGS = {"exfil-server.log": SERVER_LOG, "exfil-client.log": CLIENT_LOG}
+
+
+def clear_tool_logs() -> None:
+    """Empty the DNSExfiltrator server and client logs at the start of a run.
+
+    They are shared by all runs and appended across configurations; the
+    containers are stopped at this point, so nothing writes to them.
+    """
+    for path in RUN_TOOL_LOGS.values():
+        if path.exists() and path.stat().st_size:
+            path.write_text("")
+            logger.info(f"[+] Cleared {path.name} of the previous run")
+
+
+def archive_tool_logs(run_dir: Path) -> None:
+    """Copy this run's DNSExfiltrator server and client logs into its directory."""
+    for name, path in RUN_TOOL_LOGS.items():
+        try:
+            if path.exists() and path.stat().st_size:
+                shutil.copyfile(path, run_dir / name)
+        except OSError as e:
+            logger.warning(f"[!] Could not copy {path.name} into the run directory: {e}")
+
+
 def finalize_run_report(status: str, reason: str = "") -> None:
     """Close the run report: final status, summary, charts and report.html."""
     if REPORT is None:
         return
     stop_monitoring()
+    archive_tool_logs(REPORT.dir)
     REPORT.finish(status, reason)
     log_run_summary(REPORT)
     try:
