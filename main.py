@@ -2222,7 +2222,11 @@ def run_wartime_phase(
             # Build metadata and save results for this configuration
             config_end_timestamp = datetime.now()
             user_end = USER_END_REASONS.get(counts.get("stop_reason"))
-            transfer_incomplete = bool(transfer_watcher) and transfer_watcher.completed_after is None and not user_end
+            # Every detector alarming on every tunnel domain ends the window on purpose,
+            # usually before the file has arrived: that is not a failed transfer.
+            all_detected = counts.get("stop_reason") == "all_detected"
+            transfer_incomplete = (bool(transfer_watcher) and transfer_watcher.completed_after is None
+                                   and not user_end and not all_detected)
             if transfer_incomplete and not counts.get("interrupted"):
                 logger.warning(f"[!] {config_name}: the server never reported the file as saved - "
                                "the exfiltration did not complete (see the server and client logs)")
@@ -2266,6 +2270,8 @@ def run_wartime_phase(
                 status_reason=("Ctrl+C during wartime; partial window" if counts.get("interrupted")
                                else user_end if user_end
                                else "exfiltration did not complete within the window" if transfer_incomplete
+                               else "all detectors alarmed before the transfer completed"
+                               if all_detected and transfer_watcher and transfer_watcher.completed_after is None
                                else "")
             )
             if counts.get("interrupted"):
