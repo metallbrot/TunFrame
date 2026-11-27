@@ -54,7 +54,7 @@ Lines of allowlisted domains never reach a detector. Do not allowlist a tunnelin
 | `traffic.tunnel.pcap` | string | File name of the tunnel pcap | — |
 | `traffic.tunnel.pps` | int | Replay rate in packets per second | original timing |
 | `traffic.tunnel.tunneling_domains` | list of strings | The tunnel domains contained in the replayed pcap: the ground truth of the tunnel replay window. Required with `replay`, ignored otherwise (a log line says so). Never used for the resolver configuration | `[]` |
-| `traffic.tunnel.tunnel_server_ip` | IP | Address the simulated TLD forwards the routed domains to; must lie in `192.168.0.0/16` (`server-network`) and match the tunnel server container | `192.168.4.4` |
+| `traffic.tunnel.tunnel_server_ip` | IP | Address the simulated TLD forwards the routed domains to; must lie in `192.168.0.0/16` (`server-network`), and with DNSExfiltrator it must be `192.168.4.4`, the server container's address (checked at setup) | `192.168.4.4` |
 | `traffic.tunnel.expansion_factor` | number | Ratio of encoded query characters to payload bytes of the replayed tunnel, used to estimate its net volume (tunnel replay window only) | `1` |
 
 Each tunneling domain must be a registered domain (eTLD+1 per the ICANN section of the Public Suffix List; private suffixes such as `duckdns.org` do not count), e.g. `example.co.uk`, not `tunnel.example.co.uk`.
@@ -108,6 +108,7 @@ The run aborts before any container starts when
 - a sweep has a key other than `name`, `parameter`, `values` and `domains`, or no non-empty `values` list,
 - two DNSExfiltrator configurations get the same name (e.g. a profile named `baseline`, or two sweeps that produce the same `<name>_<parameter>_<value>`),
 - `timing.benign_only_duration` is negative, or a DNSExfiltrator configuration is named `benign_only` (with a benign-only window) or `tunnel_replay` (with a tunnel replay),
+- `traffic.tunnel.tunnel_server_ip` is not an address in `192.168.0.0/16`, or not `192.168.4.4` with DNSExfiltrator,
 - a detector listed in `detectors.active` is missing or fails to load,
 - the global allowlist file does not exist.
 

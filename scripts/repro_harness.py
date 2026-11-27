@@ -749,4 +749,15 @@ check("V4 sweep keys validated, unknown config keys reported",
       _v4 == (True, True, False) and _v4_unknown == ['timing.wartime_duraton', 'traffc'],
       "typo/empty/valid sweep rejected=%s unknown=%s" % (_v4, _v4_unknown))
 
+# V5: tunnel_server_ip must lie in server-network and, with DNSExfiltrator, be the server container.
+def _ip_rejected(value, dnsexfil):
+    try:
+        main.validate_tunnel_server_ip(value, dnsexfil); return False
+    except ValueError:
+        return True
+_v5 = (_ip_rejected('192.168.4.4', True), _ip_rejected('192.168.5.5', False), _ip_rejected('192.168.5.5', True),
+       _ip_rejected('10.0.0.1', False), _ip_rejected('nope', False))
+check("V5 tunnel_server_ip validated", _v5 == (False, False, True, True, True),
+      "4.4+dnsexfil / 5.5 / 5.5+dnsexfil / 10.0.0.1 / nope rejected=%s" % (_v5,))
+
 sys.exit(1 if FAILS else 0)

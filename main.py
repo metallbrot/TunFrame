@@ -12,6 +12,7 @@ import warnings
 from datetime import datetime
 import shutil
 import filecmp
+import ipaddress
 import copy
 import signal
 
@@ -1069,6 +1070,34 @@ def resolve_results_dir(cfg: dict) -> Path:
     return logdir if logdir.is_absolute() else (CONFIG_PATH.parent / logdir).resolve()
 
 
+# Fixed addresses from docker/docker-compose.yml.
+SERVER_NETWORK = ipaddress.ip_network("192.168.0.0/16")
+DNSEXFIL_SERVER_IP = "192.168.4.4"
+
+
+def validate_tunnel_server_ip(value, dnsexfil_enabled: bool) -> str:
+    """Check ``traffic.tunnel.tunnel_server_ip`` and return it as a string.
+
+    The simulated TLD forwards the routed domains to this address. It must lie
+    in ``server-network`` (192.168.0.0/16); with DNSExfiltrator it must be the
+    server container's address, or every query of the transfer goes nowhere.
+
+    Raises:
+        ValueError: If the address is invalid, outside ``server-network``, or not
+            the DNSExfiltrator server's address in DNSExfiltrator mode.
+    """
+    try:
+        ip = ipaddress.ip_address(str(value))
+    except ValueError:
+        raise ValueError(f"traffic.tunnel.tunnel_server_ip {value!r} is not an IP address") from None
+    if ip not in SERVER_NETWORK:
+        raise ValueError(f"traffic.tunnel.tunnel_server_ip {ip} must lie in {SERVER_NETWORK} (server-network)")
+    if dnsexfil_enabled and str(ip) != DNSEXFIL_SERVER_IP:
+        raise ValueError(f"traffic.tunnel.tunnel_server_ip {ip} must be {DNSEXFIL_SERVER_IP}, the address of the "
+                         "dnsexfiltrator-server container (docker/docker-compose.yml)")
+    return str(ip)
+
+
 def validate_dnsexfil_domains(configs: list) -> list:
     """Check the domains of every DNSExfiltrator config; return all of them.
 
@@ -1273,7 +1302,9 @@ def run_setup(cfg: dict):
         replay_domains = []
         if configured_replay_domains:
             logger.info("[i] traffic.tunnel.tunneling_domains ignored: it is only used for the tunnel pcap replay")
-    server_ip = cfg_safe_get(cfg, ['traffic', 'tunnel', 'tunnel_server_ip'], '192.168.4.4')
+    server_ip = validate_tunnel_server_ip(
+        cfg_safe_get(cfg, ['traffic', 'tunnel', 'tunnel_server_ip'], DNSEXFIL_SERVER_IP),
+        bool(cfg_safe_get(cfg, ['dnsexfiltrator', 'enabled'], False)))
     public_resolver = cfg_safe_get(cfg, ['global', 'public_resolver'], '1.1.1.1')
     subdomain_case = config_subdomain_case(cfg)  # validate before anything starts
     global_allowlist_path = cfg_safe_get(cfg, ['allowlist', 'global_allowlist_path'])
