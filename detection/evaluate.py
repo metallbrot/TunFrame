@@ -7,6 +7,7 @@ from detection.detector_base.readfile import log_end_offset
 from detection.detector_base.feature_extraction import (
     get_registered_domain, load_domain_list, is_response, get_fqdn, validate_fqdn,
     query_payload_bytes, answer_payload_bytes,
+    DEFAULT_SUBDOMAIN_CASE, apply_subdomain_case_to_event,
 )
 import json
 
@@ -63,21 +64,23 @@ def generate_allowlists(detectors: list, global_allowlist: set) -> None:
         logger.info(f"[+] {detector_name} allowlist size: {len(detector.allowlist)}")
 
 
-def run_peacetime(detectors: list, log_generator, tunneling_domains: set) -> tuple:
+def run_peacetime(detectors: list, log_generator, tunneling_domains: set,
+                  subdomain_case: str = DEFAULT_SUBDOMAIN_CASE) -> tuple:
     """Run peacetime phase to build allowlists.
 
-    Sets ``peacetime_done`` when the phase has finished.
+    Sets ``peacetime_done`` when the phase has finished. ``subdomain_case``:
+    see ``run_wartime()``.
 
     Returns:
         tuple: (peace_logcount, alldomains)
     """
     try:
-        return _run_peacetime(detectors, log_generator, tunneling_domains)
+        return _run_peacetime(detectors, log_generator, tunneling_domains, subdomain_case)
     finally:
         peacetime_done.set()
 
 
-def _run_peacetime(detectors: list, log_generator, tunneling_domains: set) -> tuple:
+def _run_peacetime(detectors: list, log_generator, tunneling_domains: set, subdomain_case: str) -> tuple:
     """Peacetime loop; see ``run_peacetime()``."""
     alldomains = set()
     peace_logcount = 0
@@ -94,6 +97,7 @@ def _run_peacetime(detectors: list, log_generator, tunneling_domains: set) -> tu
         # Idle poll: the reader yields None so the stop event is re-checked.
         if logline is None:
             continue
+        apply_subdomain_case_to_event(logline, subdomain_case)
         # Same guard as run_wartime(): events without a query name are skipped.
         if get_fqdn(logline) is None:
             continue
@@ -123,7 +127,7 @@ def _run_peacetime(detectors: list, log_generator, tunneling_domains: set) -> tu
 
 def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_allowlist: set,
                 expansion_factor: float = 1.0, transfer_event: threading.Event = None,
-                payload=None) -> tuple:
+                payload=None, subdomain_case: str = DEFAULT_SUBDOMAIN_CASE) -> tuple:
     """Run one wartime window and evaluate all detectors on it.
 
     The domain universe used for TN and FPR contains only the registered
@@ -148,6 +152,11 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
             chunk length and the encoding). ``estimated_real_traffic_up_bytes``
             is set to the same value. Without it the estimate stays
             ``traffic_volume_up_bytes / expansion_factor``.
+        subdomain_case: Case of the subdomain labels as the detectors get
+            them (``preserve``, ``lowercase``, ``uppercase`` or ``0x20``),
+            emulating where they observe DNS. Every event's ``dns.qname`` is
+            rewritten before anything reads it; ground truth and payload
+            accounting compare case-insensitively and are not affected.
 
     Returns:
         tuple: (results, logcount, tunnel_count, seen_tunnels, alldomains, counts).
@@ -206,6 +215,7 @@ def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_a
                     stop_reason = "transfer_complete"
                     break
                 continue
+            apply_subdomain_case_to_event(logline, subdomain_case)
             if get_fqdn(logline) is None:
                 continue
 

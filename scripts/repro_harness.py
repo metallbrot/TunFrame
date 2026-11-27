@@ -636,4 +636,34 @@ check("K1 benign-only window before the tunnel windows, kept out of tunnel aggre
       "plan=%s order=%s fp=%s tn=%s fpr=%s fp/h=%s report configs=%s" % (_plan, _order, _bs['fp'], _bs['tn'], _bs['fpr'],
       _bs['fp_domains_per_hour'], [c['name'] for c in _rc_mod._completed(_state)]))
 
+# global.subdomain_case: detectors get the subdomain in the configured case (resolver emulation)
+def _rejects_case(value):
+    try:
+        main.config_subdomain_case({'global': {'subdomain_case': value}})
+        return False
+    except ValueError:
+        return True
+class _SeenNames(Detector):
+    def detect(self, logline):
+        self.names = getattr(self, 'names', []) + [logline['dns']['qname']]
+_sc = {}
+for _case in ('preserve', 'lowercase', 'uppercase', '0x20'):
+    _sd = _SeenNames()
+    ev.wartime_stop_event.clear()
+    _so = ev.run_wartime([_sd], gen([evt('0.MzXw6ytb.Tunnel.com'), resp('0.mzxw6ytb.tunnel.com', [])]),
+                         {'tunnel.com'}, set(), subdomain_case=_case)
+    _sc[_case] = (_sd.names, _so[2])  # tunnel lines: ground truth still matches
+ev.peacetime_stop_event.clear()
+_ps = _SeenNames()
+ev.run_peacetime([_ps], gen([evt('ab.Example.org')]), set(), subdomain_case='uppercase')
+_mixed = _sc['0x20'][0][0].split('.')[1]
+check("S2 subdomain case configurable, preserve default",
+      _sc['preserve'][0][0] == '0.MzXw6ytb.Tunnel.com' and _sc['lowercase'][0][0] == '0.mzxw6ytb.Tunnel.com' and _sc['uppercase'][0][0] == '0.MZXW6YTB.Tunnel.com'
+      and _mixed.lower() == 'mzxw6ytb' and _mixed not in ('mzxw6ytb', 'MZXW6YTB')
+      and _sc['0x20'][0][0] == _sc['0x20'][0][1].replace('.tunnel.com', '.Tunnel.com')  # query and response agree
+      and all(n == 2 for _, n in _sc.values()) and _ps.names == ['AB.Example.org']
+      and main.config_subdomain_case({}) == 'preserve' and main.config_subdomain_case({'global': {'subdomain_case': 32}}) == '0x20'
+      and _rejects_case('random'),
+      "seen=%s tunnel_lines=%s peacetime=%s" % ({k: v[0][0] for k, v in _sc.items()}, [v[1] for v in _sc.values()], _ps.names))
+
 sys.exit(1 if FAILS else 0)

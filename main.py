@@ -22,7 +22,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from detection.evaluate import load_detectors, run_peacetime, run_wartime, generate_allowlists, save_results, load_global_allowlist, wartime_stop_event, transfer_complete_event, request_wartime_stop, reset_wartime_stop, peacetime_stop_event, peacetime_done, cfg_safe_get, format_duration
 from detection.detector_base.readfile import readjson, log_end_offset
-from detection.detector_base.feature_extraction import normalize_name, normalize_tunneling_domains, get_registered_domain
+from detection.detector_base.feature_extraction import normalize_name, normalize_tunneling_domains, get_registered_domain, parse_subdomain_case
 from config.dns_config_generator import generate_all_configs, BIND_SERVERS, RNDC_CONTAINER_KEY_PATH
 from detection.reporting import RunReport, ReportLogHandler
 from detection.monitoring import MetricsSampler, ControlWatcher
@@ -435,6 +435,11 @@ ENCODING_EXPANSION_FACTORS = {
 }
 
 
+def config_subdomain_case(cfg: dict) -> str:
+    """Return ``global.subdomain_case`` (default ``preserve``), see ``parse_subdomain_case()``."""
+    return parse_subdomain_case(cfg_safe_get(cfg, ['global', 'subdomain_case']))
+
+
 def config_expansion_factor(config: dict) -> float:
     """Return the expansion factor for one DNSExfiltrator configuration.
 
@@ -713,6 +718,7 @@ def build_and_save_metadata(
         "experiment": {
             "name": cfg_safe_get(cfg, ['global', 'name'], 'unknown'),
             "description": cfg_safe_get(cfg, ['global', 'description']),
+            "subdomain_case": config_subdomain_case(cfg),
             "start_timestamp": start_timestamp.isoformat(),
             "end_timestamp": end_timestamp.isoformat(),
             "wartime_duration": format_duration(wartime_duration),
@@ -1211,6 +1217,7 @@ def run_setup(cfg: dict):
             logger.info("[i] traffic.tunnel.tunneling_domains ignored: it is only used for the tunnel pcap replay")
     server_ip = cfg_safe_get(cfg, ['traffic', 'tunnel', 'tunnel_server_ip'], '192.168.4.4')
     public_resolver = cfg_safe_get(cfg, ['global', 'public_resolver'], '1.1.1.1')
+    subdomain_case = config_subdomain_case(cfg)  # validate before anything starts
     global_allowlist_path = cfg_safe_get(cfg, ['allowlist', 'global_allowlist_path'])
     active_detectors_list = cfg_safe_get(cfg, ['detectors', 'active'], None)
     
@@ -1252,6 +1259,7 @@ def run_setup(cfg: dict):
     banner("EXPERIMENT SETUP")
     logger.info(f"[+] Experiment: {cfg_safe_get(cfg, ['global', 'name'], '')}")
     logger.info(f"[+] Peacetime Duration: {format_duration(peacetime_duration)}")
+    logger.info(f"[+] Subdomain case for the detectors: {subdomain_case}")
     if benign_seconds:
         logger.info(f"[+] Benign-only window: {format_duration(benign_seconds)} "
                     + ("(before the tunnel windows)" if tunnel_windows else "(benign-only run: no tunnel windows)"))
@@ -1359,7 +1367,8 @@ def run_peacetime_phase(
         peace_timer = PhaseTimer(peacetime_stop_event, peacetime_duration).start()
         try:
             # Run peacetime (will block until stop event is set)
-            peace_logcount, alldomains = run_peacetime(active_detectors, log_generator, tunneling_domains_set)
+            peace_logcount, alldomains = run_peacetime(active_detectors, log_generator, tunneling_domains_set,
+                                                       subdomain_case=config_subdomain_case(cfg))
         finally:
             peace_timer.cancel()
         
@@ -1604,6 +1613,7 @@ def run_wartime_phase(
             results, logcount, tunnel_count, seen_tunnels, window_domains, counts = run_wartime(
                 active_detectors, window_log_generator, tunneling_domains_set, global_allowlist,
                 expansion_factor=float(cfg_safe_get(cfg, ['traffic', 'tunnel', 'expansion_factor'], 1) or 1),
+                subdomain_case=config_subdomain_case(cfg),
             )
         finally:
             war_timer.cancel()
@@ -2160,6 +2170,7 @@ def run_wartime_phase(
                     expansion_factor=config_expansion_factor(config),
                     transfer_event=transfer_complete_event if stop_on_transfer else None,
                     payload=exfil_payload_for(config),
+                    subdomain_case=config_subdomain_case(cfg),
                 )
             finally:
                 war_timer.cancel()

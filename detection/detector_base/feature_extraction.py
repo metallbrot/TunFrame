@@ -1,3 +1,5 @@
+import functools
+import hashlib
 import math
 import re
 from collections import Counter
@@ -72,6 +74,89 @@ def subdomain_labels(name) -> list:
     if not ext.domain or not ext.suffix or not ext.subdomain:
         return []
     return ext.subdomain.split('.')
+
+
+# Letter case of the subdomain labels as the detectors receive them
+# (``global.subdomain_case``). Emulates where the detectors observe DNS:
+#   preserve   as captured: the case the client sent. TunFrame's collector sits
+#              on the client -> resolver hop, where this is what a sensor sees
+#   lowercase  every letter lowercased (a log pipeline that normalises names)
+#   uppercase  every letter uppercased
+#   0x20       every letter's case randomised, as seen upstream of a resolver
+#              with DNS 0x20 encoding (draft-vixie-dnsext-dns0x20), e.g. at
+#              the egress or authoritative side
+# Only the labels left of the registered domain change; the registered domain
+# keeps its case, and the eTLD+1 key is lowercased anyway (normalize_name).
+SUBDOMAIN_CASES = ("preserve", "lowercase", "uppercase", "0x20")
+DEFAULT_SUBDOMAIN_CASE = "preserve"
+
+
+def parse_subdomain_case(value) -> str:
+    """Validate ``global.subdomain_case`` and return it in canonical form.
+
+    ``None`` means the default (``preserve``). An unquoted ``0x20`` in YAML is the
+    integer 32 and is accepted as ``0x20``.
+
+    Raises:
+        ValueError: For any other value.
+    """
+    if value is None:
+        return DEFAULT_SUBDOMAIN_CASE
+    if isinstance(value, int) and not isinstance(value, bool) and value == 0x20:
+        return "0x20"
+    case = str(value).strip().lower()
+    if case not in SUBDOMAIN_CASES:
+        raise ValueError(f"global.subdomain_case must be one of {', '.join(SUBDOMAIN_CASES)} "
+                         f"(got {value!r})")
+    return case
+
+
+def _dns0x20(text: str, seed: str) -> str:
+    """Randomise the case of every ASCII letter in ``text``.
+
+    The pattern is derived from ``seed`` (the lowercased query name), so the
+    same name always gets the same case pattern: a query and its response stay
+    consistent, and runs are reproducible.
+    """
+    bits = hashlib.shake_256(seed.encode("utf-8", "surrogatepass")).digest(len(text) // 8 + 1)
+    out = []
+    for i, char in enumerate(text):
+        if char.isascii() and char.isalpha():
+            upper = (bits[i // 8] >> (i % 8)) & 1
+            char = char.upper() if upper else char.lower()
+        out.append(char)
+    return "".join(out)
+
+
+@functools.lru_cache(maxsize=65536)
+def apply_subdomain_case(name: str, case: str) -> str:
+    """Return ``name`` with its subdomain labels in the given case.
+
+    See ``SUBDOMAIN_CASES``. Names without a subdomain (apex queries, names
+    without a registered domain) are returned unchanged, as is a trailing dot.
+    """
+    if case == "preserve":
+        return name
+    ext = _EXTRACT(name.rstrip('.'))
+    prefix = ext.subdomain
+    if not ext.domain or not ext.suffix or not prefix or not name.startswith(prefix):
+        return name
+    if case == "lowercase":
+        cased = prefix.lower()
+    elif case == "uppercase":
+        cased = prefix.upper()
+    else:
+        cased = _dns0x20(prefix, name.rstrip('.').lower())
+    return cased + name[len(prefix):]
+
+
+def apply_subdomain_case_to_event(event: Dict, case: str) -> None:
+    """Rewrite the event's ``dns.qname`` in place, see ``apply_subdomain_case()``."""
+    if case == "preserve":
+        return
+    dns = event.get("dns") if isinstance(event, dict) else None
+    if isinstance(dns, dict) and isinstance(dns.get("qname"), str):
+        dns["qname"] = apply_subdomain_case(dns["qname"], case)
 
 
 def normalize_tunneling_domains(domains) -> list:

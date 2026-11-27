@@ -3,6 +3,7 @@ global:
   name: "name"
   description: "description"
   public_resolver: "1.1.1.1"
+  subdomain_case: "preserve"   # case of the subdomains the detectors get: preserve (as captured), lowercase, uppercase or "0x20" (random case)
 
 detectors:
   active: ["MarkAll"]          # detector directory names; omit to load all
