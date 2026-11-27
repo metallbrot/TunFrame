@@ -725,4 +725,20 @@ check("V3 unstarted windows recorded as skipped after an interrupt",
       and _v3_files == ['baseline.json', 'p1.json', 'p2.json'] and _v3_p1 == {'name': 'p1', 'throttle': 5},
       "entries=%s files=%s" % (_v3_entries, _v3_files))
 
+# V4: sweep blocks are validated; keys main.py never reads are reported.
+def _sweep_rejected(sweep):
+    try:
+        main.get_dnsexfiltrator_configs({'dnsexfiltrator': {'enabled': True, 'baseline': {'domains': ['t.com']}, 'sweeps': [sweep]}})
+        return False
+    except ValueError:
+        return True
+_v4 = (_sweep_rejected({'name': 's', 'parameter': 'throttle', 'value': [1, 2]}),   # typo: value
+       _sweep_rejected({'name': 's', 'parameter': 'throttle', 'values': []}),
+       _sweep_rejected({'name': 's', 'parameter': 'throttle', 'values': [1, 2]}))
+_v4_unknown = main.unknown_config_keys({'timing': {'wartime_duraton': 5, 'peacetime_duration': 1}, 'traffc': {},
+                                        'traffic': {'wildcard': {'pcap': 'w'}, 'benign': {'pcap': 'b'}}})
+check("V4 sweep keys validated, unknown config keys reported",
+      _v4 == (True, True, False) and _v4_unknown == ['timing.wartime_duraton', 'traffc'],
+      "typo/empty/valid sweep rejected=%s unknown=%s" % (_v4, _v4_unknown))
+
 sys.exit(1 if FAILS else 0)

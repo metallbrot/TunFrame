@@ -105,12 +105,13 @@ The run aborts before any container starts when
 - `traffic.tunnel.replay` is set without `traffic.tunnel.tunneling_domains`, or a tunneling domain is not a registered domain,
 - a DNSExfiltrator configuration has no domains or a domain that is not a registered domain,
 - a DNSExfiltrator block uses an unknown parameter, a sweep an unknown `parameter`, or a `domain_count` outside 1 to the size of its domain list,
+- a sweep has a key other than `name`, `parameter`, `values` and `domains`, or no non-empty `values` list,
 - two DNSExfiltrator configurations get the same name (e.g. a profile named `baseline`, or two sweeps that produce the same `<name>_<parameter>_<value>`),
 - `timing.benign_only_duration` is negative, or a DNSExfiltrator configuration is named `benign_only` (with a benign-only window) or `tunnel_replay` (with a tunnel replay),
 - a detector listed in `detectors.active` is missing or fails to load,
 - the global allowlist file does not exist.
 
-The keys `traffic.wildcard` (wildcard pcaps are no longer supported; merge such traffic into the benign pcap), `traffic.tunnel.docker`, `traffic.tunnel.toolname` and `allowlist.local_allowlist_dir` are ignored with a warning.
+The keys `traffic.wildcard` (wildcard pcaps are no longer supported; merge such traffic into the benign pcap), `traffic.tunnel.docker`, `traffic.tunnel.toolname` and `allowlist.local_allowlist_dir` are ignored with a warning. Any other key that TunFrame does not read (usually a typo such as `timing.wartime_duraton`) is ignored with a warning too, so check the start of the console log.
 
 ## Examples
 

@@ -968,6 +968,8 @@ DNSEXFIL_DEFAULTS = {
 # Sweep-only parameters that set real parameters. domain_count: the first N
 # domains of the sweep's ``domains`` pool (default: the baseline's domains).
 VIRTUAL_SWEEP_PARAMETERS = ('domain_count',)
+# Keys of a sweep block; 'domains' is the domain pool of a domain_count sweep.
+SWEEP_KEYS = {'name', 'parameter', 'values', 'domains'}
 
 
 def _check_dnsexfil_keys(where: str, keys) -> None:
@@ -994,8 +996,48 @@ IGNORED_CONFIG_KEYS = {
 }
 
 
+# Every key main.py reads. None marks a mapping whose keys are validated elsewhere
+# (dnsexfiltrator.baseline: _check_dnsexfil_keys) or a list (sweeps, profiles).
+KNOWN_CONFIG_KEYS = {
+    'global': {'name': None, 'description': None, 'public_resolver': None, 'subdomain_case': None},
+    'detectors': {'active': None},
+    'timing': {'wartime_duration': None, 'peacetime_duration': None, 'benign_only_duration': None},
+    'allowlist': {'global_allowlist_path': None},
+    'traffic': {
+        'pcap_path': None,
+        'benign': {'enabled': None, 'pcap': None, 'pps': None},
+        'tunnel': {'replay': None, 'pcap': None, 'pps': None, 'tunneling_domains': None,
+                   'tunnel_server_ip': None, 'expansion_factor': None},
+    },
+    'dnsexfiltrator': {'enabled': None, 'stop_on_transfer_complete': None, 'baseline': None,
+                       'sweeps': None, 'profiles': None},
+    'output': {'logdir': None},
+}
+
+
+def unknown_config_keys(cfg, known=KNOWN_CONFIG_KEYS, prefix=()) -> list:
+    """Return the dotted paths of keys in ``cfg`` that ``main.py`` never reads.
+
+    Renamed and ignored keys (see ``RENAMED_CONFIG_KEYS``, ``IGNORED_CONFIG_KEYS``)
+    are reported by ``check_config_keys()`` itself and left out here.
+    """
+    if not isinstance(cfg, dict):
+        return []
+    reported = set(RENAMED_CONFIG_KEYS) | set(IGNORED_CONFIG_KEYS)
+    unknown = []
+    for key, value in cfg.items():
+        path = prefix + (key,)
+        if path in reported or any(path[:len(r)] == r for r in reported):
+            continue
+        if key not in known:
+            unknown.append(".".join(map(str, path)))
+        elif isinstance(known[key], dict):
+            unknown.extend(unknown_config_keys(value, known[key], path))
+    return unknown
+
+
 def check_config_keys(cfg: dict) -> None:
-    """Reject renamed configuration keys and warn about ignored ones.
+    """Reject renamed configuration keys and warn about ignored and unknown ones.
 
     Args:
         cfg: Configuration dictionary.
@@ -1013,6 +1055,8 @@ def check_config_keys(cfg: dict) -> None:
     for path, hint in IGNORED_CONFIG_KEYS.items():
         if cfg_safe_get(cfg, list(path), _missing) is not _missing:
             logger.warning(f"[!] Config key '{'.'.join(path)}' is ignored: {hint}")
+    for path in unknown_config_keys(cfg):
+        logger.warning(f"[!] Unknown config key '{path}' is ignored (typo?); see documentation/configuration.md")
 
 
 def resolve_results_dir(cfg: dict) -> Path:
@@ -1104,6 +1148,11 @@ def get_dnsexfiltrator_configs(cfg: dict):
     sweeps = cfg_safe_get(cfg, ['dnsexfiltrator', 'sweeps'], []) or []
     for sweep in sweeps:
         sweep_name = sweep.get('name', 'unnamed_sweep')
+        unknown = sorted(set(sweep) - SWEEP_KEYS)
+        if unknown:
+            raise ValueError(f"Unknown key(s) in sweep '{sweep_name}': {unknown}. Valid keys: {sorted(SWEEP_KEYS)}")
+        if not isinstance(sweep.get('values'), list) or not sweep['values']:
+            raise ValueError(f"Sweep '{sweep_name}' needs a non-empty list 'values'")
         parameter = sweep.get('parameter', '')
         if parameter not in DNSEXFIL_DEFAULTS and parameter not in VIRTUAL_SWEEP_PARAMETERS:
             raise ValueError(
