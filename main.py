@@ -12,6 +12,7 @@ import warnings
 from datetime import datetime
 import shutil
 import copy
+import signal
 
 # Suppress sklearn version warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
@@ -2389,10 +2390,34 @@ def record_unstarted_windows(cfg: dict, reason: str, dnsexfil_configs=None) -> N
                 logger.warning(f"[!] Could not record window {name}: {e}")
 
 
+# Name of the signal that ended the run (SIGTERM, SIGHUP), or None for Ctrl+C.
+TERMINATED_BY = None
+
+
+def _interrupt_on_signal(signum, frame) -> None:
+    """Turn SIGTERM/SIGHUP into the Ctrl+C path, so the run still saves and cleans up.
+
+    Without this, ``kill`` or closing the terminal ends the process without
+    running ``main()``'s ``finally``: the containers keep running and
+    run.json stays ``running``.
+    """
+    global TERMINATED_BY
+    TERMINATED_BY = signal.Signals(signum).name
+    raise KeyboardInterrupt
+
+
+def install_signal_handlers() -> None:
+    """Handle SIGTERM and SIGHUP (where available) like Ctrl+C."""
+    for name in ("SIGTERM", "SIGHUP"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), _interrupt_on_signal)
+
+
 def main():
     global RUN_CONTROL
     cfg = load_config(CONFIG_PATH)
     RUN_CONTROL = RunControl()
+    install_signal_handlers()
     
     # Reset events
     peacetime_stop_event.clear()
@@ -2443,8 +2468,8 @@ def main():
     except KeyboardInterrupt:
         logger.info("\n[!] Interrupted by user - shutting down...")
         _show_partial_results(all_experiment_results, peace_logcount, wartime_duration)
-        run_status, run_reason = "interrupted", "Ctrl+C"
-        record_unstarted_windows(cfg, "not run: the run was interrupted (Ctrl+C)", dnsexfil_configs)
+        run_status, run_reason = "interrupted", TERMINATED_BY or "Ctrl+C"
+        record_unstarted_windows(cfg, f"not run: the run was interrupted ({run_reason})", dnsexfil_configs)
 
     except Exception as e:
         logger.error(f"[!] Error: {e}", exc_info=True)

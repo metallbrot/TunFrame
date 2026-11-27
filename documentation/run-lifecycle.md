@@ -64,7 +64,7 @@ A window ends at the first of:
 | `transfer_complete` | DNSExfiltrator mode with `dnsexfiltrator.stop_on_transfer_complete`: the server printed `File saved successfully`. TunFrame waits two seconds for the collector, then lets the detectors catch up with the log as it was at that moment, so every query of the transfer is evaluated |
 | `log_ended` | the collector log reader stopped |
 | `user_skip`, `user_stop` | *Skip configuration* or *Stop run* in the dashboard |
-| `interrupted` | Ctrl+C |
+| `interrupted` | Ctrl+C, or `SIGTERM`/`SIGHUP` (e.g. `kill`, closing the terminal); containers are stopped and the run is saved as for Ctrl+C |
 
 Windows ended by `transfer_complete` differ in length; TN and FPR always refer to the window they were measured in. The results record how each window ended (`metadata.wartime_end`).
 
