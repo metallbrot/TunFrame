@@ -7,7 +7,8 @@ traffic, resource usage, DNSExfiltrator progress and logs, detection results.
 
 The only write is ``control.json`` in a running run's directory (skip the
 running configuration, stop the run). Control requests need the token that is
-embedded in the page, and the server only listens on 127.0.0.1.
+embedded in the page, and the server only listens on 127.0.0.1 and only answers
+requests addressed to ``127.0.0.1:<port>`` or ``localhost:<port>``.
 
 Usage:
     python3 scripts/dashboard.py [--results DIR] [--port 8050]
@@ -152,6 +153,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
     # -- GET ----------------------------------------------------------------
 
     def do_GET(self):
+        # Answer only requests addressed to this server by its local name: a page on
+        # another site that rebinds its DNS name to 127.0.0.1 sends its own Host and
+        # could otherwise read the results and the control token.
+        if not self._host_ok():
+            return self._error(HTTPStatus.FORBIDDEN, "forbidden")
         url = urlparse(self.path)
         parts = [unquote(p) for p in url.path.split("/") if p]
         query = parse_qs(url.query)
@@ -241,10 +247,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     # -- POST (run control) -------------------------------------------------
 
+    def _hosts(self) -> set:
+        return {f"127.0.0.1:{self.port}", f"localhost:{self.port}"}
+
+    def _host_ok(self) -> bool:
+        """Whether the request was addressed to this server by its local name."""
+        return self.headers.get("Host", "") in self._hosts()
+
     def _origin_ok(self) -> bool:
-        hosts = {f"127.0.0.1:{self.port}", f"localhost:{self.port}"}
+        """``_host_ok()`` plus, if the browser sent one, an Origin of this server."""
         origin = self.headers.get("Origin")
-        return self.headers.get("Host", "") in hosts and (origin is None or origin in {f"http://{h}" for h in hosts})
+        return self._host_ok() and (origin is None or origin in {f"http://{h}" for h in self._hosts()})
 
     def do_POST(self):
         parts = [unquote(p) for p in urlparse(self.path).path.split("/") if p]

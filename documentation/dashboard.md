@@ -7,7 +7,7 @@ python3 scripts/dashboard.py                              # http://127.0.0.1:805
 python3 scripts/dashboard.py --results ./results --port 8051
 ```
 
-Without `--results` the results directory comes from `output.logdir` in `config.yaml`. The dashboard listens on `127.0.0.1` only and lists every run directory, so earlier runs stay browsable. It switches to a newly started run unless an older run was picked in the run selector (picking the newest run follows new runs again). Dark is the default theme; use the toggle or `?theme=light`.
+Without `--results` the results directory comes from `output.logdir` in `config.yaml`. The dashboard listens on `127.0.0.1` only, answers only requests addressed to `127.0.0.1:<port>` or `localhost:<port>`, and lists every run directory, so earlier runs stay browsable. It switches to a newly started run unless an older run was picked in the run selector (picking the newest run follows new runs again). Dark is the default theme; use the toggle or `?theme=light`.
 
 The data comes from the run directory (see [Output](output.md)): `run.json` for state and results, `metrics.jsonl` for live metrics, which `main.py` writes every two seconds (DNS rates and record details from the collector log, transfer progress from the DNSExfiltrator server log, CPU and memory from `docker stats` every six seconds).
 

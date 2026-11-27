@@ -554,9 +554,17 @@ def _post(headers):
     except urllib.error.HTTPError as e: return e.code
 _codes = (_post({}), _post({'X-TunFrame-Token': 'tok123', 'Origin': 'http://evil.example'}), _post({'X-TunFrame-Token': 'tok123', 'Origin': _base}))
 _page = urllib.request.urlopen(_base + '/').read().decode()
+def _get(path, host=None):
+    req = urllib.request.Request(_base + path, headers={'Host': host} if host else {})
+    try: return urllib.request.urlopen(req).status
+    except urllib.error.HTTPError as e: return e.code
+_gets = (_get('/'), _get('/api/runs'), _get('/', 'evil.example:%d' % _db.DashboardHandler.port),
+         _get('/api/runs', 'evil.example:%d' % _db.DashboardHandler.port))
 _httpd.shutdown()
 check("O4 dashboard control needs token and local origin", _codes == (403, 403, 200) and json.load(open(_mrep.control_path))['id'] == 3 and 'tok123' in _page,
       "no token / foreign origin / valid -> %s" % (_codes,))
+check("O4b dashboard GET answers only its local host name (DNS rebinding)", _gets == (200, 200, 403, 403),
+      "local page/api, foreign Host page/api -> %s" % (_gets,))
 _rc2 = _db.read_chunk(_pl.Path(_srv), 0, 30, align_lines=True)
 check("O5 dashboard never serves partial lines; progress bars collapse; SGR colour kept, other escapes dropped",
       _rc2['data'].endswith(b"\n")
