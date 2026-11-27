@@ -8,7 +8,7 @@ TunFrame runs an isolated DNS environment in Docker ([`docker/docker-compose.yml
 
 | Container | Profile | Role | Address |
 | --- | --- | --- | --- |
-| `resolver` | `essential` | BIND recursive resolver that every client queries. Forwards the tunnel domains to the simulated root server and everything else to `global.public_resolver`. Published on host port `9999` | `172.16.0.2` (`client-network`), `10.1.1.1` (`internet`) |
+| `resolver` | `essential` | BIND recursive resolver that every client queries. Forwards the tunnel domains to the simulated root server and everything else to `global.public_resolver`. Published on the host as `127.0.0.1:9999` (loopback only, for manual queries such as `dig @127.0.0.1 -p 9999`) | `172.16.0.2` (`client-network`), `10.1.1.1` (`internet`) |
 | `root-simulator` | `essential` | BIND server standing in for the root: forwards the tunnel domains to the TLD server | `10.5.5.5` (`internet`) |
 | `tld-simulator` | `essential` | BIND server standing in for the TLD: forwards the tunnel domains to the tunnel server | `10.10.10.10` (`internet`), `192.168.1.1` (`server-network`) |
 | `dnscollector` | `essential` | [DNS-collector](https://github.com/dmachard/DNS-collector) on the resolver's network stack; writes every query and response the resolver sees as one JSON line to `docker/dns-collector/logs/dnslogs.json` | shares `resolver` |

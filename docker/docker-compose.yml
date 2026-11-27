@@ -6,8 +6,8 @@ services:
       - BIND9_USER=root
       - TZ=Europe/Berlin
     ports:
-      - 9999:53/tcp
-      - 9999:53/udp
+      - 127.0.0.1:9999:53/tcp
+      - 127.0.0.1:9999:53/udp
     volumes:
       - ./resolver/config:/etc/bind
       - ./resolver/cache:/var/cache/bind
