@@ -77,7 +77,7 @@ Parameters of a configuration and their defaults (see [DNSExfiltrator](dnsexfilt
 | `password` | password argument | RC4 key shared by client and server | `tunframe` |
 | `throttle` | `t=` | Fixed wait between queries, ms | `10` |
 | `throttle_random` | `tr=` | Additional random wait, `0` to n ms | `0` |
-| `label_max_size` | `l=` | Maximum label length, 1–63. `base32map` needs at least 36 | `63` |
+| `label_max_size` | `l=` | Maximum label length, 1–63. `base32map` needs at least 12, `base32` and `hex` at least 4 | `63` |
 | `encoding` | `e=` | `base32`, `base32map` or `hex` (`base64` is no longer supported) | `base32` |
 | `dilution` | `dil=` | Dilution queries before each data query | `0` |
 | `domains` | domain file | Domains the transfer is spread over, at least one, each a registered domain. They are routed to the tunnel server and are the configuration's ground truth | `[]` |

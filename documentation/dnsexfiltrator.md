@@ -56,9 +56,9 @@ Chunk size per query, for label limit `l` (bytes of the archive):
 | --- | --- | --- | --- |
 | `base32` | `⌊5·l/8⌋ − 1` | 38 B (61 characters) | 1.6 |
 | `hex` | `⌊l/2⌋ − 1` | 30 B (60 characters) | 2 |
-| `base32map` | `⌊5·⌊⌊l/3⌋/3⌋/8⌋ − 1` | 3 B (15 characters) | 4.8 |
+| `base32map` | `⌊5·⌊l/3⌋/8⌋ − 1` | 12 B (60 characters) | 4.8 |
 
-The `− 1` reserves a byte for the sequence number, which used to travel inside the chunk; it is now in its own label, so the byte stays unused. For `base32map` the label budget is divided by three twice, so a chunk carries far less than the label limit allows (3 bytes instead of 12 at `l = 63`), and the chunk size is 0 below `l = 36`. A transfer of a 3 KB archive therefore needs about 80 queries with base32 and about 1000 with base32map.
+The `− 1` reserves a byte for the sequence number, which used to travel inside the chunk; it is now in its own label, so the byte stays unused. For `base32map` the label budget is divided by three (each base32 character becomes a three-letter word), so the chunk size is 0 below `l = 12`; `main.py` rejects such configurations before the run starts. A transfer of a 3 KB archive therefore needs about 80 queries with base32 and about 250 with base32map.
 
 ### 4. Dilution (optional)
 
@@ -139,7 +139,6 @@ The configuration keys (`file`, `password`, `throttle`, `throttle_random`, `labe
 
 ## Known limitations
 
-- **base32map carries 3 bytes per query at `l = 63`** because of the double division described above, and nothing below `l = 36`.
 - **A retried data chunk is decrypted again** by the server before it is recognised as a retry, which advances the RC4 keystream; the rest of that transfer would then decrypt incorrectly. The acknowledgement itself is correct, and TunFrame's metrics do not depend on the decrypted content. On the isolated network retries are rare.
 - **The init has no acknowledgement value.** Any A reply counts as success for an init part.
 - **`base64` is no longer supported, but not rejected.** TunFrame passes `encoding: base64` to the client, which then encodes base32map with base64 chunk sizes: every chunk exceeds the label limit and is skipped, so nothing is transferred. `detection/exfil_payload.py` still decodes base64 for results recorded with older clients.
