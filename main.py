@@ -2370,6 +2370,25 @@ def _show_partial_results(all_experiment_results: list, peace_logcount: int, war
         )
 
 
+def record_unstarted_windows(cfg: dict, reason: str, dnsexfil_configs=None) -> None:
+    """Save every planned window without a results entry as ``skipped`` with ``reason``.
+
+    Used when the run ends early (Ctrl+C, a termination signal, an error), so
+    every requested window still leaves a results file with its reason, as
+    for a stop from the dashboard. Does nothing before the run report exists.
+    """
+    if REPORT is None:
+        return
+    done = {c["name"] for c in REPORT.state.get("configs", [])}
+    by_name = {c.get("name"): c for c in dnsexfil_configs or []}
+    for name in REPORT.state.get("planned_configs", []):
+        if name not in done:
+            try:
+                save_status_result(cfg, name, "skipped", reason, dnsexfil_config=by_name.get(name))
+            except Exception as e:  # never let bookkeeping hide the original error
+                logger.warning(f"[!] Could not record window {name}: {e}")
+
+
 def main():
     global RUN_CONTROL
     cfg = load_config(CONFIG_PATH)
@@ -2384,7 +2403,8 @@ def main():
     peace_logcount = 0
     wartime_duration = None
     run_status, run_reason = "failed", "aborted"
-    
+    dnsexfil_configs = []
+
     try:
         # Run setup phase
         (
@@ -2424,11 +2444,13 @@ def main():
         logger.info("\n[!] Interrupted by user - shutting down...")
         _show_partial_results(all_experiment_results, peace_logcount, wartime_duration)
         run_status, run_reason = "interrupted", "Ctrl+C"
+        record_unstarted_windows(cfg, "not run: the run was interrupted (Ctrl+C)", dnsexfil_configs)
 
     except Exception as e:
         logger.error(f"[!] Error: {e}", exc_info=True)
         _show_partial_results(all_experiment_results, peace_logcount, wartime_duration)
         run_status, run_reason = "failed", str(e)
+        record_unstarted_windows(cfg, f"not run: the run failed ({e})", dnsexfil_configs)
 
     finally:
         peacetime_stop_event.set()

@@ -705,4 +705,24 @@ check("V2 pending skip applied when the window opens, dropped when it closes",
       _v_pending and _v_applied and _v_dropped,
       "pending=%s applied=%s dropped=%s" % (_v_pending, _v_applied, _v_dropped))
 
+# V3: after Ctrl+C or an error, every planned window without an entry is saved as skipped with a reason.
+_v_old_report, _v_old_dir = main.REPORT, main.RESULTS_DIR
+main.REPORT = None
+main.RESULTS_DIR = _pl.Path(tempfile.mkdtemp())
+_v3 = main.start_run_report({'global': {'name': 'v3'}})
+_v3.set_planned_configs(['baseline', 'p1', 'p2'])
+main.save_status_result({}, 'baseline', 'skipped', 'already recorded')
+main.record_unstarted_windows({}, 'not run: the run was interrupted (Ctrl+C)', [{'name': 'p1', 'throttle': 5}])
+_v3_entries = {c['name']: (c['status'], c['reason']) for c in _v3.state['configs']}
+_v3_files = sorted(p.name for p in _v3.configs_dir.iterdir())
+_v3_p1 = json.load(open(_v3.configs_dir / 'p1.json'))['metadata']['dnsexfiltrator_config']
+main.close_run_report()
+main.REPORT, main.RESULTS_DIR = _v_old_report, _v_old_dir
+check("V3 unstarted windows recorded as skipped after an interrupt",
+      _v3_entries == {'baseline': ('skipped', 'already recorded'),
+                      'p1': ('skipped', 'not run: the run was interrupted (Ctrl+C)'),
+                      'p2': ('skipped', 'not run: the run was interrupted (Ctrl+C)')}
+      and _v3_files == ['baseline.json', 'p1.json', 'p2.json'] and _v3_p1 == {'name': 'p1', 'throttle': 5},
+      "entries=%s files=%s" % (_v3_entries, _v3_files))
+
 sys.exit(1 if FAILS else 0)
