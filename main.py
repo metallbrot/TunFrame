@@ -1632,7 +1632,8 @@ def run_wartime_phase(
             tunnel_count=tunnel_count,
             seen_tunnels=seen_tunnels,
             alldomains=window_domains,
-            start_timestamp=start_timestamp,
+            # The window's own start (not the run's), as for DNSExfiltrator configurations.
+            start_timestamp=window_start,
             end_timestamp=end_timestamp,
             wartime_duration=duration,
             peacetime_duration=peacetime_duration,
