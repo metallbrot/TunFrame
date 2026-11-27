@@ -1,3 +1,20 @@
+"""TunFrame controller: runs one experiment described in ``config.yaml``.
+
+``main()`` drives a run through its phases (see documentation/run-lifecycle.md):
+
+* ``run_setup()`` validates the configuration, loads the detectors and the
+  global allowlist, generates the BIND configurations and starts the
+  ``essential`` Docker profile and the live monitoring;
+* ``run_peacetime_phase()`` replays benign traffic so the detectors learn
+  their allowlists (``generate_allowlists()``);
+* ``run_wartime_phase()`` runs the benign-only window, the tunnel replay
+  window and one window per DNSExfiltrator configuration, evaluates every
+  window and saves its results;
+* ``finalize_run_report()`` writes the summary, the charts and report.html.
+
+Run it from the project root with ``python3 main.py``; the configuration
+path is fixed to ``config.yaml`` next to this file.
+"""
 import subprocess
 import time
 import json

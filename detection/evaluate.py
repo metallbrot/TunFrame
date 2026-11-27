@@ -1,3 +1,10 @@
+"""Detector loading and the peacetime and wartime loops.
+
+``load_detectors()`` imports the detector packages, ``run_peacetime()`` feeds
+benign traffic to them, ``generate_allowlists()`` turns peacetime alarms into
+allowlists, and ``run_wartime()`` feeds one window and evaluates every
+detector on it. The phase stop events shared with ``main.py`` live here too.
+"""
 import os
 import importlib
 import inspect
@@ -42,8 +49,8 @@ def load_global_allowlist(allowlist_path: str, base_dir=None) -> set:
     return global_allowlist
 
 
-def save_results(results_file: str, results: dict, metadata: dict) -> None:
-    """Save results to JSON file."""
+def save_results(results_file: str, results: list, metadata: dict) -> None:
+    """Save one window's ``metadata`` and per-detector ``results`` to a JSON file."""
     output = {
         "metadata": metadata,
         "detectors": results

@@ -1,3 +1,7 @@
+"""Base class of every detector: line filtering, timing, leakage accounting and metrics.
+
+See documentation/detectors.md for how to write a detector and for every metric.
+"""
 import time
 import logging
 from abc import ABC, abstractmethod

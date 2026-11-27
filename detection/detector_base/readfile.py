@@ -1,3 +1,4 @@
+"""Follow the DNS-collector JSON-lines log from a byte offset (see ``readjson()``)."""
 import json
 import os
 import time

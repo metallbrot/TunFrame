@@ -16,7 +16,8 @@ the net volume needs no estimate:
     base32     5 bits per character (no padding)
     base32map  5 bits per 3-letter word (each base32 character becomes a word)
     hex        4 bits per character
-    base64     6 bits per character (older clients)
+    base64     6 bits per character (only in traffic of older clients;
+               main.py no longer runs the client with base64)
 
 A retried query repeats the same sequence number and chunk; each chunk is
 counted once (key: sequence number and chunk text). For every completed

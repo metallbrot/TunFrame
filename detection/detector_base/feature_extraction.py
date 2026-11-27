@@ -1,3 +1,9 @@
+"""Helpers for DNS-collector events, used by the harness and by detectors.
+
+The registered domain (eTLD+1) computed here is the key of ground truth,
+allowlists and alarms everywhere in TunFrame. Event fields follow
+DNS-collector's JSON output (``dns.qname``, ``dns.flags.qr``, ...).
+"""
 import functools
 import hashlib
 import math
@@ -17,6 +23,7 @@ def format_bytes(bytes_val):
     return f"{bytes_val:.2f} PB"
 
 def json_safe_get(event, path, default=None):
+    """Return the value at dotted ``path`` (e.g. ``dns.flags.qr``) in ``event``, or ``default``."""
     keys = path.split('.')
     current = event
     for key in keys:
@@ -27,6 +34,7 @@ def json_safe_get(event, path, default=None):
     return current
 
 def get_fqdn(event: Dict) -> str:
+    """Return the query name (``dns.qname``) as captured, or ``None``."""
     fqdn = json_safe_get(event, "dns.qname")
     return fqdn
 
@@ -433,7 +441,7 @@ def extract_rcode(event: Dict) -> str:
     return json_safe_get(event, 'dns.rcode', 'NOERROR')
 
 def rfc3339ns_to_int(timestamp_str: str) -> int:
-    """Convert RFC3339ns to Unix timestamp (int, sortable)"""
+    """Convert an RFC 3339 timestamp to whole Unix seconds. Raises ValueError if it is empty or invalid."""
     dt = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
     return int(dt.timestamp())
 
@@ -446,13 +454,16 @@ def extract_timestamp_date(event: Dict) -> datetime:
     return datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
 
 def extract_timestamp(event: Dict) -> int:
+    """Return the capture time (``dnstap.timestamp-rfc3339ns``) in whole Unix seconds; ValueError if missing."""
     timestamp_str = json_safe_get(event, 'dnstap.timestamp-rfc3339ns', '')
     return rfc3339ns_to_int(timestamp_str)
 
 def extract_type(event: Dict) -> str:
+    """Return the query *class* (``dns.qclass``, usually ``IN``); for the record type use ``extract_record_type()``."""
     return json_safe_get(event, 'dns.qclass')
 
 def extract_query_ip(event: Dict) -> str:
+    """Return the client address that sent the query (``network.query-ip``)."""
     return json_safe_get(event, 'network.query-ip')
 
 def get_txt_content(logline: dict) -> list:
@@ -469,10 +480,12 @@ def get_txt_content(logline: dict) -> list:
     return txt_records
 
 def is_response(event: Dict) -> bool:
-   return json_safe_get(event, 'dns.flags.qr') is True
+    """True for a response (``dns.flags.qr``), False for a query."""
+    return json_safe_get(event, 'dns.flags.qr') is True
 
 
 def validate_fqdn(logline: Dict) -> bool:
+    """True if the query name is a syntactically valid FQDN (``fqdn`` package)."""
     fqdn = get_fqdn(logline)
     if not fqdn or not isinstance(fqdn, str):
         return False
