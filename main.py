@@ -1746,12 +1746,12 @@ def run_wartime_phase(
                                "they are evaluated as tunnel traffic")
 
         all_results.append({
-            'config_name': name if benign else None,
+            'config_name': name,
             'results': results,
             'logcount': logcount,
             'tunnel_count': tunnel_count
         })
-        show_results(results, config_name=name if benign else None, wartime_duration=duration,
+        show_results(results, config_name=name, wartime_duration=duration,
                      stop_reason=counts.get("stop_reason"), benign_only=benign)
         build_and_save_metadata(
             results_file=window_file,
