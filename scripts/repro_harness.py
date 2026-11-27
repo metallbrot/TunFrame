@@ -92,17 +92,26 @@ check("C1 per-config expansion factor", abs(r_c1['estimated_real_traffic_up_byte
 c2cfg = {'dnsexfiltrator': {'enabled': True,
           'baseline': {'throttle': 0, 'label_max_size': 50, 'domains': ['tunnel.com']},
           'sweeps': [{'name': 's', 'parameter': 'throttle', 'values': [5]}],
-          'profiles': [{'name': 'p', 'encoding': 'base64'}]}}
+          'profiles': [{'name': 'p', 'encoding': 'hex'}]}}
 cs = {c['name']: c for c in main.get_dnsexfiltrator_configs(c2cfg)}
 p = cs['p']
-ok_inherit = p['domains'] == ['tunnel.com'] and p['throttle'] == 0 and p['label_max_size'] == 50 and p['encoding'] == 'base64'
+ok_inherit = p['domains'] == ['tunnel.com'] and p['throttle'] == 0 and p['label_max_size'] == 50 and p['encoding'] == 'hex'
 try:
     main.get_dnsexfiltrator_configs({'dnsexfiltrator': {'enabled': True, 'baseline': {'domains': ['t.com']},
                                      'sweeps': [{'name': 'x', 'parameter': 'throtle', 'values': [1]}]}})
     ok_validate = False
 except ValueError:
     ok_validate = True
-check("C2 profiles inherit baseline; params validated", ok_inherit and ok_validate,
+def _rejected(baseline):
+    try:
+        main.get_dnsexfiltrator_configs({'dnsexfiltrator': {'enabled': True, 'baseline': dict({'domains': ['t.com']}, **baseline)}})
+        return False
+    except ValueError:
+        return True
+# base64 was removed from the tool; a label too short for any data is rejected before the run starts.
+ok_validate = (ok_validate and _rejected({'encoding': 'base64'}) and _rejected({'encoding': 'base32map', 'label_max_size': 11})
+               and not _rejected({'encoding': 'base32map', 'label_max_size': 12}) and _rejected({'label_max_size': 64}))
+check("C2 profiles inherit baseline; params, encodings and label sizes validated", ok_inherit and ok_validate,
       "profile p=%s; typo rejected=%s" % ({k: p[k] for k in ('domains', 'throttle', 'label_max_size', 'encoding')}, ok_validate))
 
 # S1: domain_count sweeps take the first N domains of the sweep's pool (default: the baseline's domains).

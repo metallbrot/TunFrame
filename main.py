@@ -106,6 +106,10 @@ def compose_up(profile):
         "--profile", profile,
         "up",
         "-d",
+        # Rebuild images whose sources changed (e.g. dnsExfiltrator.cs, compiled
+        # into the client image), so a run always uses the code in the repo.
+        # Unchanged images come from the build cache.
+        "--build",
     ]
     result = subprocess.run(cmd, check=False, capture_output=True, text=True)
     if result.returncode != 0:
@@ -430,9 +434,23 @@ def prepare_wartime_segment(label: str, pcap: str, packets_sent: int, host_pcap_
 ENCODING_EXPANSION_FACTORS = {
     'base32': 8 / 5,       # 1.6
     'base32map': 3 * 8 / 5,  # 4.8: each Base32 character becomes a 3-letter word
-    'base64': 4 / 3,
     'hex': 2.0,
 }
+# Encodings the DNSExfiltrator client supports (base64 was removed from the tool).
+DNSEXFIL_ENCODINGS = tuple(ENCODING_EXPANSION_FACTORS)
+
+
+def dnsexfil_chunk_bytes(encoding: str, label_max_size: int) -> int:
+    """File bytes one DNSExfiltrator data query carries (mirrors the client's chunk size).
+
+    base32: ``⌊5·l/8⌋ − 1``; base32map: the same over ``⌊l/3⌋`` base32 characters
+    (each becomes a three-letter word); hex: ``⌊l/2⌋ − 1``. The ``− 1`` is a byte
+    the client keeps reserved per chunk.
+    """
+    if encoding == 'hex':
+        return label_max_size // 2 - 1
+    chars = label_max_size // 3 if encoding == 'base32map' else label_max_size
+    return chars * 5 // 8 - 1
 
 
 def config_subdomain_case(cfg: dict) -> str:
@@ -1165,6 +1183,21 @@ def get_dnsexfiltrator_configs(cfg: dict):
     if not configs:
         configs.append(with_base(base_cfg, {'name': 'default', '_group': 'Baseline', '_kind': 'baseline'}))
         logger.info("[+] Created default configuration")
+
+    # Encodings and label sizes the client accepts and that leave room for data;
+    # checked here so a run never starts a configuration the client would reject.
+    problems = []
+    for config in configs:
+        name, encoding, size = config.get('name'), config.get('encoding'), config.get('label_max_size')
+        if encoding not in DNSEXFIL_ENCODINGS:
+            problems.append(f"{name}: encoding {encoding!r} is not one of {list(DNSEXFIL_ENCODINGS)}")
+        elif isinstance(size, bool) or not isinstance(size, int) or not 1 <= size <= 63:
+            problems.append(f"{name}: label_max_size {size!r} must be an integer from 1 to 63")
+        elif dnsexfil_chunk_bytes(encoding, size) < 1:
+            problems.append(f"{name}: label_max_size {size} leaves no room for data with {encoding} "
+                            f"(minimum {min(l for l in range(1, 64) if dnsexfil_chunk_bytes(encoding, l) >= 1)})")
+    if problems:
+        raise ValueError("Invalid DNSExfiltrator configurations:\n  " + "\n  ".join(problems))
 
     logger.info(f"[+] Total DNSExfiltrator configurations: {len(configs)}")
     logger.info("="*60)
