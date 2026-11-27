@@ -60,6 +60,8 @@ Both are self-contained Python re-implementations of the client and server logic
 
 `tldextract` is pinned in both `requirements.txt` and `docker/dnsexfiltrator-server/requirements.txt`: the Public Suffix List snapshot bundled with that version defines the registered domains (eTLD+1) used for ground truth, allowlists, alarms and the server's domain check. Change both pins together.
 
+The BIND and DNS-collector images in `docker/docker-compose.yml` are pinned by digest, so every run uses the same resolver and collector versions (the git commit in `run_info` identifies them). To update, pull the new image, take its digest from `docker image inspect --format '{{index .RepoDigests 0}}' <image>`, replace it in the compose file and rerun a short experiment.
+
 Optional on the host: `editcap` (Wireshark) to cut the peacetime part off the benign pcap, see [Run lifecycle](run-lifecycle.md#2-peacetime-optional).
 
 ## Adding a tunneling tool

@@ -1,7 +1,7 @@
 services:
   resolver:
     container_name: resolver
-    image: ubuntu/bind9:latest
+    image: ubuntu/bind9@sha256:45d541e9688f2c9010d22a78200117b66ed2df31b78f3464876f7e6e15cfaf77  # ubuntu/bind9:latest (Ubuntu 25.04 base) as built 2025-11-24
     environment:
       - BIND9_USER=root
       - TZ=Europe/Berlin
@@ -41,7 +41,7 @@ services:
 
   dnscollector:
     container_name: dnscollector
-    image: dmachard/dnscollector:latest
+    image: dmachard/dnscollector@sha256:f65dbd8d80dfe6a0d6825a76d8cdeeab589e07cf0af3c782e527bc2158413d01  # dmachard/dnscollector:latest as built 2026-11-19
     network_mode: service:resolver
     user: "0"
     cap_add:
@@ -60,7 +60,7 @@ services:
 
   root-simulator:
     container_name: root-simulator
-    image: ubuntu/bind9:latest
+    image: ubuntu/bind9@sha256:45d541e9688f2c9010d22a78200117b66ed2df31b78f3464876f7e6e15cfaf77  # ubuntu/bind9:latest (Ubuntu 25.04 base) as built 2025-11-24
     environment:
       - BIND9_USER=root
       - TZ=Europe/Berlin
@@ -77,7 +77,7 @@ services:
 
   tld-simulator:
     container_name: tld-simulator
-    image: ubuntu/bind9:latest
+    image: ubuntu/bind9@sha256:45d541e9688f2c9010d22a78200117b66ed2df31b78f3464876f7e6e15cfaf77  # ubuntu/bind9:latest (Ubuntu 25.04 base) as built 2025-11-24
     environment:
       - BIND9_USER=root
       - TZ=Europe/Berlin
