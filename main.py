@@ -1178,11 +1178,14 @@ def get_dnsexfiltrator_configs(cfg: dict):
 
 
 def run_setup(cfg: dict):
-    """Setup phase: Load config, clean state, start docker containers.
-    
+    """Setup phase: validate the config, load detectors, clean state, start docker containers.
+
+    Everything that can reject the run (configuration, detectors, global
+    allowlist) is checked before any container is touched.
+
     Returns:
         tuple: (wartime_duration, peacetime_duration, tunneling_domains, server_ip,
-                public_resolver, global_allowlist_path, active_detectors_list, results_file,
+                public_resolver, global_allowlist, active_detectors, results_file,
                 dnsexfil_configs)
     """
     global RESULTS_DIR
@@ -1285,6 +1288,13 @@ def run_setup(cfg: dict):
     logger.info(f"[+] Total Estimated Duration: {format_duration(total_estimated_duration)}")
     logger.info("="*60)
 
+    # Load the detectors and the global allowlist now, so a missing detector or
+    # allowlist aborts the run before any container is started.
+    logger.info("[+] Loading detectors...")
+    active_detectors = load_detectors(DETECTOR_PATH, active_detectors_list)
+    logger.info(f"\n{len(active_detectors)} detectors loaded: {[type(d).__name__ for d in active_detectors]}\n")
+    global_allowlist = load_global_allowlist(global_allowlist_path, base_dir=CONFIG_PATH.parent)
+
     results_file = report.config_file("wartime")
     
     # Ensure docker is stopped before cleaning up
@@ -1312,7 +1322,7 @@ def run_setup(cfg: dict):
 
     return (
         wartime_duration, peacetime_duration, tunneling_domains, server_ip,
-        public_resolver, global_allowlist_path, active_detectors_list, results_file,
+        public_resolver, global_allowlist, active_detectors, results_file,
         dnsexfil_configs
     )
 
@@ -1320,23 +1330,20 @@ def run_setup(cfg: dict):
 def run_peacetime_phase(
     peacetime_duration: float,
     tunneling_domains_set: set,
-    global_allowlist_path: str,
-    active_detectors_list: list,
+    global_allowlist: set,
+    active_detectors: list,
     log_generator,
     cfg: dict,
 ):
-    """Peacetime phase: Load detectors, run peacetime, generate allowlists.
-    
+    """Peacetime phase: replay benign traffic and feed it to the detectors.
+
+    The detectors and the global allowlist are loaded by ``run_setup()``;
+    ``generate_allowlists()`` turns the peacetime alarms into allowlists afterwards.
+
     Returns:
-        tuple: (active_detectors, global_allowlist, tunneling_domains_set, 
-                alldomains, peace_logcount, start_timestamp)
+        tuple: (active_detectors, global_allowlist, tunneling_domains_set,
+                alldomains, peace_logcount, start_timestamp, peacetime_packets)
     """
-    # Load detectors and setup
-    logger.info("[+] Loading detectors...")
-    active_detectors = load_detectors(DETECTOR_PATH, active_detectors_list)
-    logger.info(f"\n{len(active_detectors)} detectors loaded: {[type(d).__name__ for d in active_detectors]}\n")
-    global_allowlist = load_global_allowlist(global_allowlist_path, base_dir=CONFIG_PATH.parent)
-    
     start_timestamp = datetime.now()
 
     benign_enabled = bool(cfg_safe_get(cfg, ["traffic", "benign", "enabled"], False))
@@ -2376,7 +2383,7 @@ def main():
         # Run setup phase
         (
             wartime_duration, peacetime_duration, tunneling_domains, server_ip,
-            public_resolver, global_allowlist_path, active_detectors_list, results_file,
+            public_resolver, global_allowlist, active_detectors, results_file,
             dnsexfil_configs
         ) = run_setup(cfg)
         
@@ -2390,8 +2397,8 @@ def main():
             active_detectors, global_allowlist, tunneling_domains_set,
             alldomains, peace_logcount, start_timestamp, peacetime_packets
         ) = run_peacetime_phase(
-            peacetime_duration, tunneling_domains_set, global_allowlist_path,
-            active_detectors_list, log_generator, cfg
+            peacetime_duration, tunneling_domains_set, global_allowlist,
+            active_detectors, log_generator, cfg
         )
 
         generate_allowlists(active_detectors, global_allowlist)

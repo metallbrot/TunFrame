@@ -14,9 +14,10 @@ Every phase between setup and evaluation is optional. Each window after peacetim
 
 1. checks the configuration (renamed keys abort, ignored keys warn, domains must be registered domains, see [Configuration](configuration.md#validation)),
 2. creates the run directory (see [Output](output.md)),
-3. stops all containers, clears the collector log and the DNSExfiltrator server and client logs,
-4. generates the BIND configurations (see [Architecture](architecture.md#the-simulated-dns-hierarchy)),
-5. starts the `essential` Docker profile and the live monitoring.
+3. loads the detectors and the global allowlist (a missing detector or allowlist aborts the run here, before any container is touched),
+4. stops all containers, clears the collector log and the DNSExfiltrator server and client logs,
+5. generates the BIND configurations (see [Architecture](architecture.md#the-simulated-dns-hierarchy)),
+6. starts the `essential` Docker profile and the live monitoring.
 
 ## 2. Peacetime (optional)
 
