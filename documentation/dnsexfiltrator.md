@@ -19,7 +19,7 @@ TunFrame changed it further:
 - **Containerised and non-interactive.** Client and server run in Docker, take a domain list file, and are started and stopped by `main.py` for every configuration.
 - **Several domains per transfer.** The client rotates over all domains in its domain file; the server accepts every domain in its file.
 - **Sequence number in its own label.** Data queries are `<sequence>.<chunk>.<domain>`; the server acknowledges each one with the sequence number in the last octet of the A record.
-- **Init with encoding and file size.** The first queries announce `<encoding number>|<file size>` instead of a request count, so the server knows when the file is complete.
+- **Init with encoding and file size.** The first queries announce `<encoding number>|<file size>|` instead of a request count, so the server knows when the file is complete.
 - **Dilution queries.** Optional cover queries between data queries (`dil=`).
 - **Fixes from the protocol review** (see [Development](development.md#dnsexfiltrator-test-suites)): chunk size accounts for the encoding overhead, label length is enforced on both sides, retries with exponential backoff, retried chunks are acknowledged again instead of failing.
 - **No base64.** Only `base32`, `base32map` and `hex` remain.
@@ -32,7 +32,7 @@ The client reads the file, packs it into a ZIP archive in memory (one entry name
 
 ### 2. Init
 
-The init text is `<encoding number>|<archive size>`, e.g. `1|3030`. Encoding numbers: `0` base32map, `1` base32, `2` hex. The text is always encoded with base32map (lower case), whatever the data encoding, and split into parts of at most `l` characters. Part `i` is sent as
+The init text is `<encoding number>|<archive size>|`, e.g. `1|3030|`; the trailing `|` marks it complete, so a prefix such as `1|303` is never taken for the whole init. Encoding numbers: `0` base32map, `1` base32, `2` hex. The text is always encoded with base32map (lower case), whatever the data encoding, and split into parts of at most `l` characters. Part `i` is sent as
 
 ```text
 <part>.<domain[i mod n]>
@@ -141,5 +141,5 @@ The configuration keys (`file`, `password`, `throttle`, `throttle_random`, `labe
 
 - **A retried data chunk is decrypted again** by the server before it is recognised as a retry, which advances the RC4 keystream; the rest of that transfer would then decrypt incorrectly. The acknowledgement itself is correct, and TunFrame's metrics do not depend on the decrypted content. On the isolated network retries are rare.
 - **The init has no acknowledgement value.** Any A reply counts as success for an init part.
-- **`base64` is no longer supported, but not rejected.** TunFrame passes `encoding: base64` to the client, which then encodes base32map with base64 chunk sizes: every chunk exceeds the label limit and is skipped, so nothing is transferred. `detection/exfil_payload.py` still decodes base64 for results recorded with older clients.
+- **`base64` is no longer supported.** `main.py` rejects `encoding: base64` (and any other encoding than `base32`, `base32map` and `hex`) before the run starts. `detection/exfil_payload.py` still decodes base64 for results recorded with older clients.
 - **One `dig` process per query.** With `s=` set, every query starts a `dig` process, which limits the query rate the client can reach.
