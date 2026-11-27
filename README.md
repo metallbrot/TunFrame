@@ -44,7 +44,7 @@ Then:
 ## Running
 
 ```bash
-python3 main.py                     # runs the experiment described in config.yaml
+python3 main.py                     # runs the experiment described in config.yaml (fixed path, next to main.py)
 python3 scripts/dashboard.py        # live dashboard on http://127.0.0.1:8050 (second terminal)
 ```
 

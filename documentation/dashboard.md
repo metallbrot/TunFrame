@@ -34,6 +34,20 @@ The benign-only window is never part of the tunnel views (results, heatmap, wart
 
 *Skip configuration* and *Stop run* (see [Run lifecycle](run-lifecycle.md#dashboard-controls)) ask for confirmation and write `control.json` into the running run's directory, which is the dashboard's only write. Requests carry a token embedded in the page and are only accepted from the dashboard's own origin.
 
+### HTTP API
+
+The page uses a small JSON API, which also serves scripts that follow a run. All routes answer only requests addressed to `127.0.0.1:<port>` or `localhost:<port>`. `<run>` is the name of a run directory.
+
+| Method and route | Returns |
+| --- | --- |
+| `GET /api/runs` | All runs, newest first: id, name, status, mode, phase, start, last update, finished and planned window counts |
+| `GET /api/run/<run>` | The run's `run.json`, plus `has_report` and the server time |
+| `GET /api/run/<run>/log?offset=<n>` | Up to 64 KB of `run.log` from byte `n` (`-1` or omitted: the tail), as `{offset, size, text}` |
+| `GET /api/run/<run>/metrics?offset=<n>` | Complete `metrics.jsonl` samples from byte `n`, as `{offset, size, samples}` |
+| `GET /api/run/<run>/toollog?which=server\|client&offset=<n>` | DNSExfiltrator server or client output: the live log while the run is going, the copy in the run directory afterwards |
+| `GET /runs/<run>/<path>` | A file of the run directory (`.html`, `.json`, `.png`, `.log`), e.g. `report.html` or `configs/baseline.json` |
+| `POST /api/run/<run>/control` | Body `{"action": "skip_config"}` or `{"action": "stop_run"}`; needs the page's token in `X-TunFrame-Token` and a local `Origin`. Only for a running run (`409` otherwise) |
+
 ## Static report
 
 At the end of every run `main.py` writes `report.html` and its charts into the run directory. Rebuild them for any run directory with
