@@ -20,6 +20,7 @@ docker/dns-collector/logs/*
 pcaps/*
 experiments/
 *.conf
+!config/templates/*.conf
 .vscode
 exfiltration_data/
 allowlists/*
