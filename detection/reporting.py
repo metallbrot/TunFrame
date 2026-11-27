@@ -3,12 +3,15 @@
 Every run writes one directory ``<results>/<name>_<YYYYmmdd-HHMMSS>/``::
 
     run.json             run state, updated live: phase, progress, one entry per
-                         configuration with its status and detector summary
+                         window with its status and detector summary
     run.log              console log of the run (without progress lines)
     metrics.jsonl        one sample every few seconds: DNS rates, response codes,
                          top domains, exfiltration progress, CPU and memory
     control.json         requests from the dashboard (skip configuration, stop run)
-    configs/<name>.json  full results of one wartime window / configuration
+    exfil-server.log     DNSExfiltrator server output of the run (copied at the end)
+    exfil-client.log     DNSExfiltrator client output of the run (copied at the end)
+    configs/<name>.json  full results of one window (benign_only, tunnel_replay,
+                         one per DNSExfiltrator configuration, or wartime)
     charts/*.png         static charts (written at the end of the run)
     report.html          static report embedding the charts
 

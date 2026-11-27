@@ -5,7 +5,7 @@ const TOKEN = document.querySelector('meta[name="tunframe-token"]').content;
 const pct = v => `${v.toFixed(1)} %`, pct0 = v => `${v.toFixed(0)} %`;
 // fmt: tables and tooltips; cell: heatmap cells; axis: y axis. lower: lower is better.
 // ULV %: how much of the exfiltrated file left before the detector's alarm (DNSExfiltrator mode:
-// decoded file bytes over the size the tool announced; replay mode: share of the raw tunnel
+// decoded file bytes over the size the tool announced; tunnel replay: share of the raw tunnel
 // uplink). DLV %: the same share for the downlink. Net leak: file bytes before the alarm.
 const METRICS = [
   {key: "f1", label: "F1", max: 1, fmt: v => v.toFixed(3), cell: v => v.toFixed(2)},
@@ -132,7 +132,7 @@ function toast(text) {
 }
 const latestSample = () => state.metrics.samples[state.metrics.samples.length - 1];
 // Benign-only window (timing.benign_only_duration): runs between peacetime and the tunnel
-// windows with benign and wildcard traffic only, so every alarm is a false positive; it
+// windows with benign traffic only, so every alarm is a false positive; it
 // measures each detector's FPR without adversarial load. It is kept out of every tunnel
 // aggregate (results, heatmap, ranking, trade-off) and shown in its own info box.
 // A benign-only run (mode "benign_only") has this window and no tunnel windows.

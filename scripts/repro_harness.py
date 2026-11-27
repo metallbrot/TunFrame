@@ -276,23 +276,19 @@ e.wait(3)
 el = time.time() - t0
 check("M8 old timer cannot stop next phase", 0.9 <= el <= 1.5, "config 2 stop event fired after %.2f s (expected ~1.0 s)" % el)
 
-calls = []
-main.replay_fire_and_forget = lambda pcap, pps, label: calls.append(label)   # no docker
-main._started_replays.clear()
-main.start_replay("benign", "x.pcap", 10)      # peacetime
-main.start_replay("benign", "x.pcap", 10)      # wartime must continue, not restart
-time.sleep(0.2)
-check("M10 benign replay started once", calls == ["benign"], "replay starts: %s (expected ['benign'])" % calls)
 check("M10 peacetime replay only with peacetime", "    if peacetime_duration:\n        if benign_enabled:" in open(os.path.join(ROOT, "main.py")).read(),
       "peacetime phase starts replays only when peacetime_duration > 0")
 
 src_w = open(os.path.join(ROOT, "main.py")).read()
 war_part = src_w[src_w.index("def run_wartime_phase("):]
-# Wartime now resumes benign/wildcard from the packet after peacetime stopped:
-# it slices a wartime segment and starts a managed replay per window.
-check("C6 wildcard replay in wartime",
-      'prepare_wartime_segment("wildcard"' in war_part and 'managed_replay_start("wildcard"' in war_part,
-      "run_wartime_phase slices a wildcard wartime segment and replays it per window")
+# Every window resumes the benign pcap from the packet after peacetime stopped
+# (one sliced segment, a managed replay per window); the tunnel pcap is replayed
+# inside its own window only. Wildcard pcaps are no longer supported.
+check("C6 benign segment per window, tunnel replay inside its window, no wildcard",
+      'prepare_wartime_segment("benign"' in war_part and 'managed_replay_start("benign"' in war_part
+      and 'managed_replay_start("tunnel"' in war_part and "wildcard" not in war_part.lower()
+      and ('traffic', 'wildcard') in main.IGNORED_CONFIG_KEYS,
+      "benign segment replayed per window, tunnel replay started by its window, traffic.wildcard ignored with a warning")
 
 _d7 = tempfile.mkdtemp()
 with open(os.path.join(_d7, 'top.csv'), 'w') as f:
@@ -318,7 +314,7 @@ check("F3 rates guard the denominator", (true_positive_rate(0, 0), false_positiv
 _war = src_w[src_w.index("def run_wartime_phase("):]
 check("F4 background traffic starts before the client",
       _war.index("start_background_replays()\n\n            logger.info(f\"[+] Starting DNSExfiltrator client") < _war.index('"mono", "/app/DNSExfiltrator.exe"'),
-      "benign/wildcard replays start before the one-shot client")
+      "benign replay starts before the one-shot client")
 
 try:
     main.check_config_keys({'timing': {'duration': 60}})
@@ -632,14 +628,15 @@ _plan = (main.benign_window_duration(_t()), main.tunnel_windows_planned(_t()),
          main.tunnel_windows_planned(_t(traffic={'tunnel': {'replay': True}})),
          main.benign_window_duration({}), main.tunnel_windows_planned({}))
 _war_src = _war[_war.index("def run_wartime_phase("):]
-_order = (_war_src.index("run_single_window(BENIGN_WINDOW") < _war_src.index("wartime_offset = log_end_offset(LOGFILE)")
-          < _war_src.index('start_replay("tunnel"') < _war_src.index("if dnsexfil_enabled and dnsexfil_configs:\n        # Verify"))
+_order = (_war_src.index("run_single_window(BENIGN_WINDOW") < _war_src.index("run_single_window(REPLAY_WINDOW")
+          < _war_src.index("if dnsexfil_enabled and dnsexfil_configs:\n        # Verify")
+          < _war_src.index('run_single_window("wartime"'))
 _bd = FlagTunnel(); _bd.alarms = {'a.org', 'b.org'}
 _br = [_bd.evaluate(set(), {'a.org', 'b.org', 'c.org', 'd.org'}, 10, 0, set())]
 main.add_false_alarm_rates(_br, 1800)
 _bs = summarize_detectors(_br)[0]
 _state = {'configs': [{'name': 'benign_only', 'detectors': [_bs]}, {'name': 'cfg', 'detectors': [_bs]}], 'planned_configs': ['benign_only', 'cfg']}
-check("K1 benign-only window before the tunnel windows, kept out of tunnel aggregates",
+check("K1 window order benign-only -> tunnel replay -> DNSExfiltrator; benign kept out of tunnel aggregates",
       _plan == (600.0, False, True, True, 0.0, True) and _order
       and (_bs['fp'], _bs['tn'], _bs['fpr'], _bs['fp_domains_per_hour']) == (2, 2, 0.5, 4.0)
       and _bs['false_positives_sample'] == ['a.org', 'b.org']

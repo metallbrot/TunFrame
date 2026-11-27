@@ -287,55 +287,10 @@ def tunnel_traffic_seen(start_offset: int, tunneling_domains: set, settle_second
         time.sleep(0.2)
 
 
-def replay_fire_and_forget(pcap: str, pps: int, label: str):
-    """Start tcpreplay in the replayer container without waiting for it."""
-    if not pcap:
-        logger.warning(f"[-] Skipping {label} replay (disabled)")
-        return
-    
-    cmd = ["tcpreplay"]
-    if pps is None or pps <= 0:
-        logger.info(f"[+] Firing {label} replay at original speed from {pcap}")
-        cmd.extend(["-i", "replay0", pcap])
-    else:
-        logger.info(f"[+] Firing {label} replay: {pps} PPS from {pcap}")
-        cmd.extend([f"--pps={pps}", "-i", "replay0", pcap])
-    
-    docker_exec("pcap-replayer", *cmd, check=False)
-
-
-# Traffic sources whose replay has been started in this run. tcpreplay keeps
-# running until it reaches the end of the pcap or the containers stop.
-_started_replays = set()
-
-
-def start_replay(label: str, pcap: str, pps) -> bool:
-    """Start a fire-and-forget tcpreplay at most once per run and traffic source.
-
-    A replay started during peacetime keeps running into wartime, so wartime
-    sees the continuation of the capture instead of a restart from packet 0.
-
-    Args:
-        label: Traffic source name (``benign``, ``wildcard``, ``tunnel``).
-        pcap: Pcap file name inside the pcap directory.
-        pps: Replay rate in packets per second; None or <= 0 for original timing.
-
-    Returns:
-        bool: True if a new replay was started, False if it was already running.
-    """
-    if label in _started_replays:
-        logger.info(f"[+] {label} replay already running since an earlier phase, continuing it")
-        return False
-    _started_replays.add(label)
-    threading.Thread(target=replay_fire_and_forget, args=(pcap, pps, label), daemon=True).start()
-    return True
-
-
 # ---------------------------------------------------------------------------
 # Managed replays for the peacetime -> wartime split.
 #
-# Unlike the fire-and-forget continuous stream above, these replays are started
-# and stopped explicitly. Peacetime replays a pcap, is stopped, and reports how
+# Every replay is started and stopped explicitly. Peacetime replays a pcap, is stopped, and reports how
 # many packets it actually sent; wartime then resumes the SAME pcap right after
 # that packet (via ``prepare_wartime_segment``), so wartime never reuses the
 # benign traffic the allowlist was learned from, and every DNSExfiltrator config
@@ -574,7 +529,8 @@ def wartime_end_info(counts: dict, watcher: "TransferWatcher" = None) -> dict:
     """Describe how a wartime window ended, for the results metadata.
 
     ``transfer_completed`` and ``transfer_seconds`` are ``None`` when no
-    transfer was watched (replay mode or ``stop_on_transfer_complete: false``).
+    transfer was watched (benign-only, tunnel replay and fallback windows, or
+    ``stop_on_transfer_complete: false``).
     """
     return {
         "reason": counts.get("stop_reason"),
@@ -584,6 +540,7 @@ def wartime_end_info(counts: dict, watcher: "TransferWatcher" = None) -> dict:
 
 
 BENIGN_WINDOW = "benign_only"  # name of the benign-only window and its results file
+REPLAY_WINDOW = "tunnel_replay"  # name of the tunnel pcap replay window and its results file
 
 
 def benign_window_duration(cfg: dict) -> float:
@@ -591,7 +548,7 @@ def benign_window_duration(cfg: dict) -> float:
 
     The benign-only window (``timing.benign_only_duration``, minutes) runs
     between peacetime and the tunnel windows. It is a wartime window without
-    tunnel traffic: only the benign and wildcard replays run, so every alarm
+    tunnel traffic: only the benign replay runs, so every alarm
     is a false positive and it measures the FPR without adversarial load.
 
     Raises:
@@ -607,8 +564,9 @@ def tunnel_windows_planned(cfg: dict) -> bool:
     """Whether tunnel windows follow peacetime (and the benign-only window).
 
     False only for a benign-only run: a benign-only window and neither tunnel
-    replay nor DNSExfiltrator. Without a benign-only window the wartime window
-    always runs, since tunnel traffic may also come from a tool started by hand.
+    replay nor DNSExfiltrator. Without a benign-only window a tunnel window
+    always runs: the replay, the DNSExfiltrator configurations, or a single
+    ``wartime`` window for a tool started by hand.
     """
     if not benign_window_duration(cfg):
         return True
@@ -728,10 +686,6 @@ def build_and_save_metadata(
     benign_pcap = cfg_safe_get(cfg, ["traffic", "benign", "pcap"], "")
     benign_pps = cfg_safe_get(cfg, ["traffic", "benign", "pps"])
     
-    wildcard_enabled = bool(cfg_safe_get(cfg, ["traffic", "wildcard", "enabled"], False))
-    wildcard_pcap = cfg_safe_get(cfg, ["traffic", "wildcard", "pcap"], "")
-    wildcard_pps = cfg_safe_get(cfg, ["traffic", "wildcard", "pps"])
-    
     metadata = {
         "experiment": {
             "name": cfg_safe_get(cfg, ['global', 'name'], 'unknown'),
@@ -748,11 +702,6 @@ def build_and_save_metadata(
                 "enabled": benign_enabled,
                 "pcap": benign_pcap,
                 "pps": benign_pps,
-            },
-            "wildcard": {
-                "enabled": wildcard_enabled,
-                "pcap": wildcard_pcap,
-                "pps": wildcard_pps,
             },
             "tunnel": {
                 "replay_enabled": tunneling_enabled,
@@ -1029,6 +978,7 @@ IGNORED_CONFIG_KEYS = {
     ('traffic', 'tunnel', 'docker'): "live tunneling is configured in the dnsexfiltrator section",
     ('traffic', 'tunnel', 'toolname'): "not used",
     ('allowlist', 'local_allowlist_dir'): "saved per-detector allowlists are not supported; use a peacetime phase",
+    ('traffic', 'wildcard'): "wildcard pcaps are no longer supported; merge such traffic into the benign pcap",
 }
 
 
@@ -1233,11 +1183,10 @@ def run_setup(cfg: dict):
         peacetime_duration = float(peacetime_duration_config) * 60
 
     # traffic.tunnel.tunneling_domains only declares the tunnel domains of the
-    # replayed pcap (its ground truth); it is read only when the replay runs
-    # (replay mode, i.e. traffic.tunnel.replay without DNSExfiltrator).
+    # replayed pcap (the ground truth of the tunnel replay window); it is read
+    # only when traffic.tunnel.replay is set.
     # Fail fast (before DNS configs are generated) unless every entry is an eTLD+1.
-    replay_active = (bool(cfg_safe_get(cfg, ["traffic", "tunnel", "replay"], False))
-                     and not cfg_safe_get(cfg, ["dnsexfiltrator", "enabled"], False))
+    replay_active = bool(cfg_safe_get(cfg, ["traffic", "tunnel", "replay"], False))
     configured_replay_domains = cfg_safe_get(cfg, ["traffic", "tunnel", "tunneling_domains"], []) or []
     if replay_active:
         replay_domains = normalize_tunneling_domains(configured_replay_domains)
@@ -1268,13 +1217,20 @@ def run_setup(cfg: dict):
     # Every known tunnel domain: ground truth of the replay window, peacetime and
     # benign-only warnings, tunnel marking in the live metrics.
     tunneling_domains = replay_domains + [d for d in routed_domains if d not in replay_domains]
-    if benign_seconds and any(c['name'] == BENIGN_WINDOW for c in dnsexfil_configs):
-        raise ValueError(f"DNSExfiltrator configuration name '{BENIGN_WINDOW}' is reserved for the benign-only window")
-    tunnel_names = [c['name'] for c in dnsexfil_configs] or (["wartime"] if tunnel_windows else [])
-    report.set_planned_configs(([BENIGN_WINDOW] if benign_seconds else []) + tunnel_names)
+    # Window names that are not DNSExfiltrator configurations.
+    for reserved, used in ((BENIGN_WINDOW, benign_seconds), (REPLAY_WINDOW, replay_active)):
+        if used and any(c['name'] == reserved for c in dnsexfil_configs):
+            raise ValueError(f"DNSExfiltrator configuration name '{reserved}' is reserved")
+    # Windows: benign-only -> tunnel replay -> DNSExfiltrator configurations;
+    # a single "wartime" window when none of them is enabled.
+    fallback_window = tunnel_windows and not replay_active and not dnsexfil_configs
+    report.set_planned_configs(([BENIGN_WINDOW] if benign_seconds else []) + ([REPLAY_WINDOW] if replay_active else [])
+                               + [c['name'] for c in dnsexfil_configs] + (["wartime"] if fallback_window else []))
     benign_group = [{"name": BENIGN_WINDOW, "group": "Benign-only", "kind": "benign_only",
                      "parameter": None, "value": None}] if benign_seconds else []
-    report.update(mode="tunnel" if tunnel_windows else "benign_only", config_groups=benign_group + [
+    replay_group = [{"name": REPLAY_WINDOW, "group": "Tunnel replay", "kind": "replay",
+                     "parameter": None, "value": None}] if replay_active else []
+    report.update(mode="tunnel" if tunnel_windows else "benign_only", config_groups=benign_group + replay_group + [
         {"name": c['name'], "group": c.get('_group', 'Baseline'), "kind": c.get('_kind', 'baseline'),
          "parameter": c.get('_parameter'), "value": c.get('_value')}
         for c in dnsexfil_configs
@@ -1282,12 +1238,9 @@ def run_setup(cfg: dict):
     report.update(timing={"wartime_duration": wartime_duration, "peacetime_duration": peacetime_duration,
                           "benign_only_duration": benign_seconds})
     
-    # Calculate total estimated duration
-    if dnsexfil_configs:
-        total_estimated_duration = peacetime_duration + (wartime_duration * len(dnsexfil_configs))
-    else:
-        total_estimated_duration = peacetime_duration + (wartime_duration if tunnel_windows else 0)
-    total_estimated_duration += benign_seconds
+    # Calculate total estimated duration (upper bound: every window runs to its timer)
+    tunnel_window_count = int(replay_active) + len(dnsexfil_configs) + int(fallback_window)
+    total_estimated_duration = peacetime_duration + benign_seconds + wartime_duration * tunnel_window_count
     
     banner("EXPERIMENT SETUP")
     logger.info(f"[+] Experiment: {cfg_safe_get(cfg, ['global', 'name'], '')}")
@@ -1296,15 +1249,16 @@ def run_setup(cfg: dict):
     if benign_seconds:
         logger.info(f"[+] Benign-only window: {format_duration(benign_seconds)} "
                     + ("(before the tunnel windows)" if tunnel_windows else "(benign-only run: no tunnel windows)"))
-        if not (cfg_safe_get(cfg, ["traffic", "benign", "enabled"], False)
-                or cfg_safe_get(cfg, ["traffic", "wildcard", "enabled"], False)):
-            logger.warning("[!] Benign-only window without benign or wildcard replay: only external DNS traffic is evaluated")
+        if not cfg_safe_get(cfg, ["traffic", "benign", "enabled"], False):
+            logger.warning("[!] Benign-only window without benign replay: only external DNS traffic is evaluated")
     
+    if tunnel_window_count:
+        logger.info(f"[+] Wartime Duration (per window): {format_duration(wartime_duration)}")
+    if replay_active:
+        logger.info(f"[+] Tunnel replay window: {cfg_safe_get(cfg, ['traffic', 'tunnel', 'pcap'], '')} "
+                    f"(tunneling domains: {', '.join(replay_domains)})")
     if dnsexfil_configs:
-        logger.info(f"[+] Wartime Duration (per config): {format_duration(wartime_duration)}")
         logger.info(f"[+] Number of DNSExfiltrator configs: {len(dnsexfil_configs)}")
-    elif tunnel_windows:
-        logger.info(f"[+] Wartime Duration: {format_duration(wartime_duration)}")
     
     logger.info(f"[+] Total Estimated Duration: {format_duration(total_estimated_duration)}")
     logger.info("="*60)
@@ -1367,19 +1321,11 @@ def run_peacetime_phase(
     benign_pcap = cfg_safe_get(cfg, ["traffic", "benign", "pcap"], "")
     benign_pps = cfg_safe_get(cfg, ["traffic", "benign", "pps"])
 
-    wildcard_enabled = bool(cfg_safe_get(cfg, ["traffic", "wildcard", "enabled"], False))
-    wildcard_pcap = cfg_safe_get(cfg, ["traffic", "wildcard", "pcap"], "")
-    wildcard_pps = cfg_safe_get(cfg, ["traffic", "wildcard", "pps"])
-
-    # Background replays start here only if there is a peacetime phase; with
-    # peacetime disabled they are started by the wartime phase.
+    # The benign replay starts here only if there is a peacetime phase; with
+    # peacetime disabled it is started by every wartime window.
     if peacetime_duration:
         if benign_enabled:
             managed_replay_start("benign", benign_pcap, benign_pps)
-        if wildcard_enabled:
-            managed_replay_start("wildcard", wildcard_pcap, wildcard_pps)
-
-        if wildcard_enabled or benign_enabled:
             logger.info(f"[+] Benign traffic started - running for {format_duration(peacetime_duration)}...")
         else:
             logger.info("[+] No benign traffic - waiting for external DNS traffic or wartime...")
@@ -1421,8 +1367,6 @@ def run_peacetime_phase(
         time.sleep(1)  # let tcpreplay flush its final "Actual: N packets" stats
         if benign_enabled:
             peacetime_packets["benign"] = managed_replay_packets_sent("benign")
-        if wildcard_enabled:
-            peacetime_packets["wildcard"] = managed_replay_packets_sent("wildcard")
         logger.info(f"[+] Peacetime replay stopped at (packets sent): {peacetime_packets}")
 
     return (
@@ -1555,7 +1499,11 @@ def run_wartime_phase(
     results_sink: list = None,
     peacetime_packets: dict = None
 ):
-    """Wartime phase: Start tunnel traffic, run wartime, build and save results.
+    """Run every window after peacetime and save each one's results.
+
+    Order: benign-only window (``timing.benign_only_duration``), tunnel pcap
+    replay window (``traffic.tunnel.replay``), one window per DNSExfiltrator
+    configuration; a single ``wartime`` window when none of them is enabled.
 
     Completed windows are appended to ``results_sink`` as soon as they finish,
     so the caller still has them after an interrupt. A window ended by Ctrl+C
@@ -1575,7 +1523,7 @@ def run_wartime_phase(
 
     all_results = results_sink if results_sink is not None else []
 
-    # Benign/wildcard background traffic. These are started and stopped per
+    # Benign background traffic. It is started and stopped per
     # wartime window (managed_replay_*), each beginning at the packet after the
     # one peacetime stopped on: prepare_wartime_segment slices the already-shown
     # peacetime packets off the front once, here, and the window replays the
@@ -1586,45 +1534,46 @@ def run_wartime_phase(
     benign_enabled = bool(cfg_safe_get(cfg, ["traffic", "benign", "enabled"], False))
     benign_pcap = cfg_safe_get(cfg, ["traffic", "benign", "pcap"], "")
     benign_pps = cfg_safe_get(cfg, ["traffic", "benign", "pps"])
-    wildcard_enabled = bool(cfg_safe_get(cfg, ["traffic", "wildcard", "enabled"], False))
-    wildcard_pcap = cfg_safe_get(cfg, ["traffic", "wildcard", "pcap"], "")
-    wildcard_pps = cfg_safe_get(cfg, ["traffic", "wildcard", "pps"])
 
     benign_wartime_pcap = (
         prepare_wartime_segment("benign", benign_pcap, peacetime_packets.get("benign", 0), host_pcap_dir)
         if benign_enabled else benign_pcap
     )
-    wildcard_wartime_pcap = (
-        prepare_wartime_segment("wildcard", wildcard_pcap, peacetime_packets.get("wildcard", 0), host_pcap_dir)
-        if wildcard_enabled else wildcard_pcap
-    )
 
     def start_background_replays():
-        """Start benign/wildcard for one wartime window, from the segment start."""
+        """Start the benign replay for one wartime window, from the segment start."""
         if benign_enabled:
             managed_replay_start("benign", benign_wartime_pcap, benign_pps)
-        if wildcard_enabled:
-            managed_replay_start("wildcard", wildcard_wartime_pcap, wildcard_pps)
 
-    # Window numbering for the dashboard: the benign-only window comes first.
+    # Window order: benign-only (optional) -> tunnel pcap replay (optional) ->
+    # DNSExfiltrator configurations. Without any of them a single "wartime"
+    # window runs (tunnel traffic from a tool started by hand, no ground truth).
+    replay_window = tunneling_enabled
+    replay_domains_set = ({normalize_name(d) for d in normalize_tunneling_domains(
+        cfg_safe_get(cfg, ["traffic", "tunnel", "tunneling_domains"], []))} if replay_window else set())
+    dnsexfil_window_count = len(dnsexfil_configs) if dnsexfil_enabled and dnsexfil_configs else 0
+    fallback_window = tunnel_windows and not replay_window and not dnsexfil_window_count
+    # Window numbering for the dashboard.
     index_offset = 1 if benign_seconds else 0
-    tunnel_window_count = (len(dnsexfil_configs) if dnsexfil_enabled and dnsexfil_configs
-                           else (1 if tunnel_windows else 0))
-    total_windows = index_offset + tunnel_window_count
+    total_windows = index_offset + int(replay_window) + dnsexfil_window_count + int(fallback_window)
 
     def run_single_window(name: str, duration: float, window_file: Path, benign: bool,
-                          log_offset: int, index: int):
+                          log_offset: int, index: int, ground_truth: set, tunnel_pcap: bool = False):
         """Run and save one window outside the DNSExfiltrator loop.
 
         Used for the benign-only window (``benign``: no tunnel traffic, every
-        alarm is a false positive) and for the wartime window of replay mode
-        or external tunnel traffic. Both see the same benign/wildcard segment.
+        alarm is a false positive), the tunnel pcap replay window
+        (``tunnel_pcap``: the tunnel replay starts and stops with the window)
+        and the fallback wartime window. All see the same benign segment.
+        ``ground_truth`` holds the window's tunneling domains.
         """
         if benign:
             logger.info(f"[+] Benign-only window started (no tunnel traffic): running for {format_duration(duration)}...")
+        elif tunnel_pcap:
+            logger.info(f"[+] Tunnel replay window started ({tunneling_pcap}): running for {format_duration(duration)}...")
         else:
             logger.info(f"[+] Wartime started: Running for {format_duration(duration)}...")
-        set_phase("wartime", "benign only" if benign else "")
+        set_phase("wartime", "benign only" if benign else "tunnel replay" if tunnel_pcap else "")
 
         # Fresh generator, starting where this window began in the log
         window_log_generator = readjson(str(LOGFILE), start_offset=log_offset)
@@ -1634,17 +1583,22 @@ def run_wartime_phase(
         REPORT.update(current={"name": name, "index": index, "total": total_windows,
                                "started": datetime.now().isoformat(timespec="seconds"),
                                "window_started": datetime.now().isoformat(timespec="seconds"),
-                               **({"parameters": {"traffic": "benign and wildcard only (no tunnel)"}} if benign else {})})
+                               **({"parameters": {"traffic": "benign only (no tunnel)"}} if benign else
+                                  {"parameters": {"pcap": tunneling_pcap, "pps": tunneling_pps or "original timing",
+                                                  "tunneling_domains": sorted(ground_truth)}} if tunnel_pcap else {})})
 
-        # Start benign/wildcard for this window, from the wartime segment start.
+        # Start benign for this window, from the wartime segment start, and the
+        # tunnel pcap from its first packet (stopped with the window).
         start_background_replays()
+        if tunnel_pcap:
+            managed_replay_start("tunnel", tunneling_pcap, tunneling_pps)
         window_start = datetime.now()
 
         # Run the window (blocks until its stop event is set or all tunnels are
         # detected). The TN/FPR universe is the set of domains seen in this window only.
         try:
             results, logcount, tunnel_count, seen_tunnels, window_domains, counts = run_wartime(
-                active_detectors, window_log_generator, tunneling_domains_set, global_allowlist,
+                active_detectors, window_log_generator, ground_truth, global_allowlist,
                 expansion_factor=float(cfg_safe_get(cfg, ['traffic', 'tunnel', 'expansion_factor'], 1) or 1),
                 subdomain_case=config_subdomain_case(cfg),
             )
@@ -1682,8 +1636,8 @@ def run_wartime_phase(
             end_timestamp=end_timestamp,
             wartime_duration=duration,
             peacetime_duration=peacetime_duration,
-            tunneling_domains_set=tunneling_domains_set,
-            tunneling_enabled=tunneling_enabled and not benign,
+            tunneling_domains_set=ground_truth,
+            tunneling_enabled=tunnel_pcap,
             tunneling_pcap=tunneling_pcap,
             tunneling_pps=tunneling_pps,
             server_ip=server_ip,
@@ -1705,14 +1659,14 @@ def run_wartime_phase(
         if RUN_CONTROL.stop_requested.is_set():
             save_status_result(cfg, BENIGN_WINDOW, "skipped", USER_END_REASONS["user_stop"])
         else:
-            # Behave like the tunnel windows that follow: every DNSExfiltrator
-            # configuration starts from a reset detector (allowlists kept), the
-            # replay-mode window continues from peacetime.
-            if dnsexfil_enabled and dnsexfil_configs:
+            # Behave like the first tunnel window that follows: the replay window
+            # continues from peacetime, a DNSExfiltrator configuration starts
+            # from a reset detector (allowlists kept).
+            if not replay_window and dnsexfil_window_count:
                 for detector in active_detectors:
                     detector.reset()
             run_single_window(BENIGN_WINDOW, benign_seconds, get_report(cfg).config_file(BENIGN_WINDOW),
-                              True, log_end_offset(LOGFILE), 1)
+                              True, log_end_offset(LOGFILE), 1, tunneling_domains_set)
             # Alarms and counters of the benign-only window must not carry over
             # into the tunnel window; detector state continues like live traffic.
             for detector in active_detectors:
@@ -1721,23 +1675,29 @@ def run_wartime_phase(
             return alldomains, all_results
         banner("WARTIME PHASE")
 
-    # Never truncate the log while the collector writes to it: record where
-    # wartime starts and read only from this offset.
-    wartime_offset = log_end_offset(LOGFILE)
+    # Tunnel pcap replay (optional): its own window after the benign-only window
+    # and before the DNSExfiltrator configurations. Each window reads the log
+    # from its own start offset (the log is never truncated while the collector
+    # writes to it).
+    if replay_window:
+        if RUN_CONTROL.stop_requested.is_set():
+            save_status_result(cfg, REPLAY_WINDOW, "skipped", USER_END_REASONS["user_stop"])
+        else:
+            run_single_window(REPLAY_WINDOW, wartime_duration, get_report(cfg).config_file(REPLAY_WINDOW),
+                              False, log_end_offset(LOGFILE), index_offset + 1, replay_domains_set,
+                              tunnel_pcap=True)
+        index_offset += 1
 
-    # Start tunnel traffic if enabled and DNSExfiltrator is not
-    if tunneling_enabled and not dnsexfil_enabled:
-        if start_replay("tunnel", tunneling_pcap, tunneling_pps):
-            logger.info(f"[+] Tunnel replay started - running for {format_duration(wartime_duration)}...")
-    
     # Configurations requested by the user; each one gets a results file,
     # also when it is skipped.
     requested_configs = list(dnsexfil_configs or [])
 
     if RUN_CONTROL.stop_requested.is_set():
-        for skipped in (requested_configs if dnsexfil_enabled and requested_configs else [{'name': 'wartime'}]):
+        remaining = (requested_configs if dnsexfil_window_count
+                     else [{'name': 'wartime'}] if fallback_window else [])
+        for skipped in remaining:
             save_status_result(cfg, skipped.get('name', 'config'), "skipped", USER_END_REASONS["user_stop"],
-                               dnsexfil_config=skipped if dnsexfil_enabled else None)
+                               dnsexfil_config=skipped if dnsexfil_window_count else None)
         return alldomains, all_results
 
     # Handle DNSExfiltrator configurations sequentially
@@ -2008,7 +1968,7 @@ def run_wartime_phase(
                 continue
             
             # The window (timer and background traffic) starts before the
-            # one-shot client, so benign/wildcard traffic overlaps the
+            # one-shot client, so benign traffic overlaps the
             # exfiltration instead of following it.
             RUN_CONTROL.open_window()
             war_timer = PhaseTimer(wartime_stop_event, wartime_duration).start()
@@ -2306,9 +2266,11 @@ def run_wartime_phase(
         alldomains.update(all_seen_domains)
         
         logger.info(f"[+] Completed all {len(dnsexfil_configs)} DNSExfiltrator configurations")
-    else:
-        # Standard wartime without DNSExfiltrator (replay mode or external traffic)
-        run_single_window("wartime", wartime_duration, results_file, False, wartime_offset, index_offset + 1)
+    elif fallback_window:
+        # No benign-only window, replay or DNSExfiltrator: one wartime window for
+        # tunnel traffic from a tool started by hand (no ground truth).
+        run_single_window("wartime", wartime_duration, results_file, False, log_end_offset(LOGFILE),
+                          index_offset + 1, tunneling_domains_set)
 
     return alldomains, all_results
 

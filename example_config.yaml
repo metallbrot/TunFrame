@@ -1,4 +1,4 @@
-# Template for config.yaml. Durations are in minutes. See README.md for every key.
+# Template for config.yaml. Durations are in minutes. Every key: documentation/configuration.md
 global:
   name: "name"
   description: "description"
@@ -22,17 +22,13 @@ traffic:
     enabled: true
     pcap: "benign.pcap"
     pps: 20
-  wildcard:
-    enabled: false
-    pcap: "wildcard.pcap"
-    pps: 15
   tunnel:
-    replay: false              # replay mode; ignored when dnsexfiltrator.enabled
+    replay: false              # replay the pcap in its own window, before the DNSExfiltrator configs
     pcap: "tunneling.pcap"
     pps: 0
     tunneling_domains: ["tunnel.com"]   # replay only: the tunnel domains in the pcap (ground truth)
     tunnel_server_ip: 192.168.4.4   # must be in 192.168.0.0/16
-    expansion_factor: 1.6      # replay mode only
+    expansion_factor: 1.6      # tunnel replay window only
 
 dnsexfiltrator:
   enabled: false

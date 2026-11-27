@@ -12,8 +12,10 @@ class Detector(ABC):
     """Base class for detectors evaluated by TunFrame.
 
     Subclasses implement ``detect()`` and add registered domains to
-    ``self.alarms``. They may override ``on_phase_reset()`` to clear internal
-    state between DNSExfiltrator configurations.
+    ``self.alarms``. ``process_line()`` calls ``detect()`` only for domains that
+    are neither allowlisted nor already flagged in the current phase.
+    Subclasses may override ``on_phase_reset()`` to clear internal state when
+    the detector is reset between windows.
     """
 
     def __init__(self):
@@ -28,8 +30,8 @@ class Detector(ABC):
         """Hook for detector-specific state, called by ``reset()``.
 
         Override in a detector to clear internal state (windows, trackers,
-        sketches) that must not carry over between DNSExfiltrator configs.
-        The default does nothing.
+        sketches) that must not carry over into the next window. The default
+        does nothing.
         """
 
     def reset(self, clear_allowlist: bool = False, reset_state: bool = True):
@@ -37,8 +39,13 @@ class Detector(ABC):
 
         This is the single reset API of the base class.
 
-        * At every DNSExfiltrator config boundary ``main.py`` calls ``reset()``:
-          the allowlist is kept and ``on_phase_reset()`` clears detector state.
+        * Before every DNSExfiltrator configuration, and before a benign-only
+          window that a DNSExfiltrator configuration follows directly,
+          ``main.py`` calls ``reset()``: the allowlist is kept and
+          ``on_phase_reset()`` clears detector state.
+        * After the benign-only window ``main.py`` calls
+          ``reset(reset_state=False)``: alarms and counters are cleared,
+          detector state continues.
         * After peacetime ``generate_allowlists()`` calls
           ``reset(clear_allowlist=True, reset_state=False)`` and then assigns
           the new allowlist; state learned in peacetime is kept.

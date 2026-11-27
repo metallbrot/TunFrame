@@ -8,9 +8,13 @@ per theme (``<name>.png`` light, ``<name>-dark.png`` dark, the dashboard palette
 - ``charts/heatmap_<metric>.png``: detector x configuration for every metric.
 - ``charts/tradeoff.png``: recall over FPR, one point per detector and configuration.
 - ``charts/sweep_<name>.png``: F1 and ULV% over the swept parameter values.
-- ``report.html``: run overview, detector comparison, per-detector and
-  per-configuration tables and the charts. Dark by default like the dashboard,
+- ``report.html``: run overview, benign-only baseline (if the run had a
+  benign-only window), detector comparison, configuration ranking, per-window
+  and per-detector tables and the charts. Dark by default like the dashboard,
   with a light/dark toggle that shares the dashboard's stored choice.
+
+The benign-only window has no tunnel traffic; it is left out of every chart
+and tunnel table and only appears in its own section.
 
 Colors follow the detector, not its rank: detectors take the categorical slots
 in sorted name order, the same order the dashboard uses.
@@ -477,7 +481,7 @@ def _benign_section(benign: dict, completed: list, detectors: list, swatch) -> s
                      + f"<td>{r.get('fp', '–')}</td><td>{r.get('tn', '–')}</td>"
                      f"<td>{'–' if per_hour is None else f'{per_hour:.1f}'}</td><td>{r.get('allowlist_size', '–')}</td>"
                      f"<td class='l'>{e(', '.join(sample)) or 'none'}{f' (+{more} more)' if more > 0 else ''}</td></tr>")
-    parts.append("</table><p class='sub'>Benign and wildcard traffic only, after peacetime and with the same "
+    parts.append("</table><p class='sub'>Benign traffic only, after peacetime and with the same "
                  "allowlists as the tunnel windows, so every alarm is a false positive. "
                  + ("FPR with tunnel: mean over the finished tunnel configurations; Change: with tunnel minus "
                     "benign-only. " if with_tunnel else "")
@@ -572,7 +576,7 @@ def render_html(run_dir: Path, state: dict, charts: list) -> Path:
         parts.append("</table><p class='sub'>Means over the finished configurations, ordered by ULV % (lower first), "
                      "then F1. ULV %: share of the exfiltrated "
                      "file that left before the detector's alarm (DNSExfiltrator mode: decoded data chunks over the file "
-                     "size the tool announced; replay mode: share of the raw tunnel uplink). DLV %: the same for the "
+                     "size the tool announced; tunnel replay: share of the raw tunnel uplink). DLV %: the same for the "
                      "downlink. Lower is better.</p></div>")
 
     if completed and detectors:
