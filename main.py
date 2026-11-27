@@ -1134,6 +1134,17 @@ def get_dnsexfiltrator_configs(cfg: dict):
         configs.append(with_base(base_cfg, {'name': 'default', '_group': 'Baseline', '_kind': 'baseline'}))
         logger.info("[+] Created default configuration")
 
+    # Names identify a configuration in run.json, the dashboard and the report;
+    # a second configuration with the same name would replace the first there.
+    seen, duplicates = set(), []
+    for config in configs:
+        if config['name'] in seen and config['name'] not in duplicates:
+            duplicates.append(config['name'])
+        seen.add(config['name'])
+    if duplicates:
+        raise ValueError(f"Duplicate DNSExfiltrator configuration name(s): {duplicates}. "
+                         "Every baseline, sweep value and profile needs its own name.")
+
     # Encodings and label sizes the client accepts and that leave room for data;
     # checked here so a run never starts a configuration the client would reject.
     problems = []

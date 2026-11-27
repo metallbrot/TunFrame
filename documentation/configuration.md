@@ -105,6 +105,7 @@ The run aborts before any container starts when
 - `traffic.tunnel.replay` is set without `traffic.tunnel.tunneling_domains`, or a tunneling domain is not a registered domain,
 - a DNSExfiltrator configuration has no domains or a domain that is not a registered domain,
 - a DNSExfiltrator block uses an unknown parameter, a sweep an unknown `parameter`, or a `domain_count` outside 1 to the size of its domain list,
+- two DNSExfiltrator configurations get the same name (e.g. a profile named `baseline`, or two sweeps that produce the same `<name>_<parameter>_<value>`),
 - `timing.benign_only_duration` is negative, or a DNSExfiltrator configuration is named `benign_only` (with a benign-only window) or `tunnel_replay` (with a tunnel replay),
 - the global allowlist file does not exist.
 

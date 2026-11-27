@@ -674,4 +674,16 @@ check("S2 subdomain case configurable, preserve default",
       and _rejects_case('random'),
       "seen=%s tunnel_lines=%s peacetime=%s" % ({k: v[0][0] for k, v in _sc.items()}, [v[1] for v in _sc.values()], _ps.names))
 
+# V1: configuration names must be unique (run.json, dashboard and report key windows by name).
+def _dup_rejected(dnsexfil):
+    try:
+        main.get_dnsexfiltrator_configs({'dnsexfiltrator': dict({'enabled': True, 'baseline': {'domains': ['t.com']}}, **dnsexfil)})
+        return False
+    except ValueError:
+        return True
+_dup = (_dup_rejected({'profiles': [{'name': 'baseline'}]}), _dup_rejected({'profiles': [{'name': 'p'}, {'name': 'p'}]}),
+        _dup_rejected({'profiles': [{'name': 'p'}, {'name': 'q'}]}))
+check("V1 duplicate configuration names rejected", _dup == (True, True, False),
+      "profile named baseline=%s, two profiles p=%s, distinct names=%s" % _dup)
+
 sys.exit(1 if FAILS else 0)
