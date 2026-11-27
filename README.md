@@ -1,266 +1,74 @@
 # TunFrame
 
-TunFrame is a benchmarking framework for evaluating DNS tunneling detection methods against adversarial evasion techniques. It provides a standardized, reproducible environment to measure detection effectiveness under comparable conditions.
+TunFrame is a benchmarking framework for evaluating DNS tunneling detection methods against adversarial evasion techniques. It runs an isolated DNS environment in Docker, generates benign and tunnel traffic, feeds every query and response to the detectors under test, and measures how well and how early they detect the tunnel and how much data leaks before they do.
 
 > Developed as part of the bachelor's thesis *"Evaluating adversarial evasion of DNS Tunneling Detection"*.
 
----
+## What a run does
 
-## Table of Contents
+```text
+setup → peacetime → benign-only window → tunnel replay window → DNSExfiltrator configurations → evaluation
+```
 
-- [Prerequisites](#prerequisites)
-- [Setup](#setup)
-- [Project Structure](#project-structure)
-- [How It Works](#how-it-works)
-- [Adding a Detection Method](#adding-a-detection-method)
-- [Adding a Tunneling Tool](#adding-a-tunneling-tool)
-- [Configuring the Framework](#configuring-the-framework)
-- [Running the Framework](#running-the-framework)
-- [Output](#output)
+- **Peacetime** replays benign traffic; whatever a detector flags becomes part of its allowlist.
+- **Benign-only window** replays benign traffic only: every alarm is a false positive, so it measures each detector's false positive rate without adversarial load.
+- **Tunnel replay window** replays a recorded tunnel pcap alongside the benign traffic.
+- **DNSExfiltrator configurations** exfiltrate a file live with a modified [DNSExfiltrator](documentation/dnsexfiltrator.md), one window per configuration (baseline, parameter sweeps, attacker profiles), alongside the benign traffic.
+- **Evaluation** reports per window and detector the domain-level confusion matrix, precision, recall, F1, FPR, and the share of the file that left before the first alarm (ULV %).
 
----
+Every phase is optional. A live dashboard follows the run, and every run ends with a static report.
 
 ## Prerequisites
 
-Ensure the following are installed before using TunFrame:
-
-- **Python** ≥ 3.9
-- **Docker** and **Docker Compose**
----
+- Python ≥ 3.9
+- Docker with Docker Compose
+- Optional: `editcap` (part of Wireshark) on the host, so later windows continue the benign pcap after the part replayed in peacetime
 
 ## Setup
-
-### 1. Create virtual environment
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-```
-
-### 2. Install dependencies
-
-```bash
 pip install -r requirements.txt
+cp example_config.yaml config.yaml
 ```
 
-### 3. Configure the framework
+Then:
 
-Edit `config.yaml` to specify your test run parameters. See [Configuring the Framework](#configuring-the-framework) for details.
+1. Put your pcaps (benign traffic, optionally a tunnel recording) into `pcaps/`.
+2. For DNSExfiltrator runs, put the files to exfiltrate into `docker/dnsexfiltrator-client/data/` (e.g. `synthetic_cc_data_100.csv`).
+3. Add your detectors under `detection/detectors/<name>/detector.py` (see [Detectors and metrics](documentation/detectors.md)).
+4. Optionally provide a global allowlist, e.g. the Tranco list in `allowlists/`.
+5. Edit `config.yaml` (see [Configuration](documentation/configuration.md)).
 
----
-
-## Project Structure
-
-```
-TunFrame/
-├── main.py                        # Entry point
-├── config.yaml                    # Main configuration file
-├── requirements.txt
-├── docker-compose.yaml            # Docker setup for tunneling tools
-├── detection/
-    ├── detector_base/
-    │   └── detector_base.py       # Abstract base class for detectors
-    └── detectors/                 # One subdirectory per detection method
-
-```
-
----
-
-## How It Works
-
-![TunFrame Architecture](./documentation/docker_architecture.png)
-
-TunFrame orchestrates three traffic sources simultaneously on an isolated Docker network:
-
-1. **Benign traffic** – replayed from a PCAP to simulate normal DNS activity or injected via injection of DNS traffic of host device into resolver container
-2. **Wildcard traffic** – replayed PCAP to stress-test allowlist coverage
-3. **Tunnel traffic** – either replayed from PCAP or generated live via a Dockerized tunneling tool
-
-Each configured detector monitors DNS traffic in real time. A `peacetime` phase (optional) runs before tunneling starts, allowing detectors to build a baseline. Results are written to the configured `output.logdir`.
-
-**Replay vs. Docker mode** :
-
-| Mode | Config | Description |
-|---|---|---|
-| Replay | `tunnel.replay: true` | Injects pre-recorded tunneling traffic via tcpreplay |
-| Docker (live) | `tunnel.docker: true` | Spins up client/server containers to generate live tunneling traffic |
-
----
-
-## Adding a Detection Method
-
-1. Create a new directory under `detection/detectors/` named after your method.
-2. Implement your detector in a Python file within that directory, following the interface defined in `detection/detector_base/detector_base.py`.
-
----
-
-## Adding a Tunneling Tool
-
-1. Containerize the tunneling tool using Docker — create separate images for client and server.
-2. Add both containers to `docker-compose.yaml`, connecting them to the appropriate networks:
-   - Client → `client-network`
-   - Server → `server-network`
-3. In `config.yaml`, set:
-   - `traffic.tunnel.tunneling_domains` – domain(s) the tool uses
-   - `traffic.tunnel.tunnel_server_ip` – IP of the tunnel server (must be in `192.168.0.0/16` and match the server's IP in step 2)
-   - `traffic.tunnel.toolname` – name used for logging
-
----
-
-## Configuring the Framework
-
-All settings are defined in `config.yaml`. Parameters marked **required** must be set; all others have usable defaults.
-
-### Global Settings
-
-| Parameter | Type | Required | Description | Default |
-|---|---|---|---|---|
-| `global.name` | string | No | Name of the test run | `TunFrame` |
-| `global.description` | string | No | Description of the test run | `No description.` |
-| `global.public_resolver` | IP | **Yes** | IP of the public DNS resolver for non-tunneled queries | `1.1.1.1` |
-
-### Detector Settings
-
-| Parameter | Type | Required | Description | Default |
-|---|---|---|---|---|
-| `detector.names` | list[string] | **No** | List of detector names (must match directory names in `detection/detectors/`) | None |
-
-### Timing Settings
-
-| Parameter | Type | Required | Description | Default |
-|---|---|---|---|---|
-| `timing.duration` | int | **Yes** | Total test run duration in minutes | `10` |
-| `timing.peacetime_duration` | int | No | Duration of pre-tunnel baseline phase in seconds (no tunneling occurs) | `0` |
-
-### Allowlist Settings
-
-| Parameter | Type | Required | Description | Default |
-|---|---|---|---|---|
-| `allowlist.global_allowlist_path` | path | **Yes** | Path to global allowlist (e.g., Tranco top-1M domains) — prevents false positives on legitimate domains | `./allowlists/tranco.txt` |
-| `allowlist.local_allowlist_dir` | path | No | Directory with per-detector allowlist files | `./allowlists/local` |
-
-### Traffic Settings
-
-#### General
-
-| Parameter | Type | Required | Description | Default |
-|---|---|---|---|---|
-| `traffic.pcap_path` | path | **Yes** | Directory containing all PCAP files | `./pcaps` |
-
-#### Benign Traffic
-
-| Parameter | Type | Required | Description | Default |
-|---|---|---|---|---|
-| `traffic.benign.enabled` | bool | No | Inject benign DNS traffic alongside tunneling | `false` |
-| `traffic.benign.pcap` | string | If enabled | Filename of benign traffic PCAP | `benign.pcap` |
-| `traffic.benign.pps` | int | No | Replay rate in packets per second | `10000` |
-
-#### Wildcard Traffic
-
-| Parameter | Type | Required | Description | Default |
-|---|---|---|---|---|
-| `traffic.wildcard.enabled` | bool | No | Inject wildcard DNS traffic | `false` |
-| `traffic.wildcard.pcap` | string | If enabled | Filename of wildcard DNS PCAP | `wildcard.pcap` |
-| `traffic.wildcard.pps` | int | No | Replay rate in packets per second | `1000` |
-
-#### Tunnel Traffic
-
-| Parameter | Type | Required | Description | Default |
-|---|---|---|---|---|
-| `traffic.tunnel.replay` | bool | **Yes\*** | Replay tunnel traffic from PCAP | `false` |
-| `traffic.tunnel.docker` | bool | **Yes\*** | Generate live tunnel traffic via Docker containers | `false` |
-| `traffic.tunnel.pcap` | string | If replay | Filename of tunnel traffic PCAP | `tunnel.pcap` |
-| `traffic.tunnel.pps` | int | No | Replay rate in packets per second | `10` |
-| `traffic.tunnel.toolname` | string | No | Name of tunneling tool (used for labeling in results) | `Tunnel` |
-| `traffic.tunnel.tunneling_domains` | list[string] | **Yes** | Domain(s) used by the tunneling tool | `["tunnel.com"]` |
-| `traffic.tunnel.tunnel_server_ip` | IP | If docker | IP of tunnel server — must be within `192.168.0.0/16` (Docker internal network) | `192.168.3.3` |
-| `traffic.tunnel.expansion_factor` | int | No | Multiplier for tunneled payload size (e.g., `3` means 1 byte of data generates ~3 bytes of DNS traffic) | `1` |
-
-
-### Output Settings
-
-| Parameter | Type | Required | Description | Default |
-|---|---|---|---|---|
-| `output.logdir` | path | **Yes** | Directory for storing benchmark results and logs | `results` |
-
----
-
-## Example Configurations
-
-### Minimal — Replay Mode with no benign replay traffic
-
-```yaml
-global:
-  public_resolver: "1.1.1.1"
-
-timing:
-  duration: 120
-
-allowlist:
-  global_allowlist_path: "./allowlists/tranco.txt"
-
-traffic:
-  pcap_path: "./pcaps"
-  tunnel:
-    replay: true
-    docker: false
-    pcap: "tunnel.pcap"
-    tunneling_domains: ["example.com"]
-
-output:
-  logdir: "results"
-```
-
-### Full — Live Docker Mode with Benign Traffic
-
-```yaml
-global:
-  name: "dnscat2-evasion-test"
-  description: "Live dnscat2 tunneling with benign background traffic"
-  public_resolver: "1.1.1.1"
-
-timing:
-  duration: 300
-  peacetime_duration: 30
-
-allowlist:
-  global_allowlist_path: "./allowlists/tranco.txt"
-  local_allowlist_dir: "./allowlists/local/"
-
-traffic:
-  pcap_path: "./pcaps"
-  benign:
-    enabled: true
-    pcap: "benign.pcap"
-    pps: 500
-  wildcard:
-    enabled: false
-  tunnel:
-    replay: false
-    docker: true
-    toolname: "dnscat2"
-    tunneling_domains: ["example.com"]
-    tunnel_server_ip: "192.168.3.3"
-    expansion_factor: 1
-
-output:
-  logdir: "results"
-```
-
----
-
-## Running the Framework
+## Running
 
 ```bash
-(.venv) python3 main.py
+python3 main.py                     # runs the experiment described in config.yaml (fixed path, next to main.py)
+python3 scripts/dashboard.py        # live dashboard on http://127.0.0.1:8050 (second terminal)
 ```
 
----
+Results go to `results/<name>_<timestamp>/`: one JSON file per window, the run state, the live metrics, the logs, charts and `report.html` (see [Output](documentation/output.md)).
 
-## Output
+Offline checks of the harness (no Docker needed):
 
-Results are written to the directory specified in `output.logdir`. Each run produces:
+```bash
+python3 scripts/repro_harness.py
+```
 
-- Per-detector logs with flagged DNS queries
-- Aggregate benchmark metrics (precision, recall, F1) per detector
-- A run summary with configuration snapshot and timestamps
+## Documentation
+
+| Page | Contents |
+| --- | --- |
+| [Architecture](documentation/architecture.md) | Docker services, networks, the simulated DNS hierarchy |
+| [Run lifecycle](documentation/run-lifecycle.md) | Every phase and window, how windows end, dashboard controls |
+| [Configuration](documentation/configuration.md) | Every `config.yaml` key, validation, examples |
+| [DNSExfiltrator](documentation/dnsexfiltrator.md) | The modified exfiltration tool and how TunFrame drives it |
+| [Detectors and metrics](documentation/detectors.md) | Writing a detector, its lifecycle, every metric |
+| [Dashboard and report](documentation/dashboard.md) | The live dashboard and `report.html` |
+| [Output](documentation/output.md) | The run directory and the results files |
+| [Development](documentation/development.md) | Project structure, tests, adding a tunneling tool |
+
+## Credits
+
+The exfiltration tool is [DNSExfiltrator](https://github.com/Arno0x/DNSExfiltrator) by Arno0x, as modified by Kristijan Žiža for Žiža, K., Tadić, P. & Vuletić, P., *DNS exfiltration detection in the presence of adversarial attacks and modified exfiltrator behaviour*, Int. J. Inf. Secur. (2023), <https://doi.org/10.1007/s10207-023-00723-w>, and further adapted for TunFrame. Please cite the paper if you use the tool.

@@ -2,13 +2,42 @@
 """DNS Config Generator for BIND9"""
 
 from pathlib import Path
+import base64
 import logging
+import os
 
 logger = logging.getLogger('dns_detector')
 
 # Static DNS server IPs
 TLD_SERVER_IP = "10.10.10.10"
 ROOT_SERVER_IP = "10.5.5.5"
+
+# rndc control channel, used by main.py to flush cached tunnel answers between
+# configurations. The key file lives next to named.conf in each server's
+# bind-mounted /etc/bind; the channel only listens on the container's loopback.
+RNDC_KEY_NAME = "tunframe-rndc"
+RNDC_KEY_FILE = "rndc.key"
+RNDC_CONTAINER_KEY_PATH = f"/etc/bind/{RNDC_KEY_FILE}"
+BIND_SERVERS = ("resolver", "root-simulator", "tld-simulator")  # config dir == container name
+
+
+def rndc_preamble() -> str:
+    """named.conf lines that enable rndc on 127.0.0.1 with the generated key."""
+    return (
+        f'include "{RNDC_CONTAINER_KEY_PATH}";\n'
+        f'controls {{ inet 127.0.0.1 port 953 allow {{ 127.0.0.1; }} keys {{ "{RNDC_KEY_NAME}"; }}; }};\n\n'
+    )
+
+
+def write_rndc_keys(output_dir: str) -> None:
+    """Write one fresh rndc key into the config directory of every BIND server."""
+    secret = base64.b64encode(os.urandom(32)).decode()
+    key = f'key "{RNDC_KEY_NAME}" {{ algorithm hmac-sha256; secret "{secret}"; }};\n'
+    for server in BIND_SERVERS:
+        path = Path(output_dir) / server / "config" / RNDC_KEY_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(key)
+        path.chmod(0o600)
 
 
 def generate_dns_config(template_file: str,
@@ -24,7 +53,7 @@ def generate_dns_config(template_file: str,
     """
     template = Path(template_file).read_text()
 
-    config = template
+    config = rndc_preamble() + template
     for placeholder, value in replacements.items():
         config = config.replace(placeholder, value)
 
@@ -44,22 +73,19 @@ def generate_all_configs(tunneling_domains: list[str],
     Generate all DNS configs from templates
 
     Args:
-        tunneling_domains: List of tunnel domains (e.g., ["tunnel.example.com"])
+        tunneling_domains: Domains routed to the tunnel server, each an eTLD+1
+            (e.g., ["example.com"]); main.py passes the DNSExfiltrator domains
         tunnel_server_ip: Tunnel/attacker server IP (e.g., "192.168.3.3")
         public_resolver: Public DNS resolver (e.g., "8.8.8.8")
         template_dir: Directory containing template files
         output_dir: Base output directory
     """
 
-    tunnel_domain = tunneling_domains[0] if tunneling_domains else ""
-    tunnel_domain_tld = tunnel_domain.split(".")[-1] if "." in tunnel_domain else ""
-
     # --- validate-except block: only generated when domains are present ---
     if tunneling_domains:
         tunnel_domains_list = "; ".join(f'"{d}"' for d in tunneling_domains)
         validate_except_block = f"validate-except {{ {tunnel_domains_list}; }};"
     else:
-        tunnel_domains_list = ""
         validate_except_block = ""
         logger.warning("[!] No tunneling domains provided — validate-except block will be omitted")
 
@@ -90,14 +116,13 @@ def generate_all_configs(tunneling_domains: list[str],
         for domain in tunneling_domains
     )
 
+    write_rndc_keys(output_dir)
+
     # --- TLD Config ---
     generate_dns_config(
         template_file=f"{template_dir}/tld.conf",
         output_file=f"{output_dir}/tld-simulator/config/named.conf",
         replacements={
-            "{TUNNEL_DOMAIN}": tunnel_domain,
-            "{TUNNEL_SERVER_IP}": tunnel_server_ip,
-            "{TUNNEL_DOMAINS}": tunnel_domains_list,
             "{ZONE_BLOCKS}": tld_zone_blocks,
             "{VALIDATE_EXCEPT_BLOCK}": validate_except_block,
         }
@@ -108,9 +133,6 @@ def generate_all_configs(tunneling_domains: list[str],
         template_file=f"{template_dir}/root.conf",
         output_file=f"{output_dir}/root-simulator/config/named.conf",
         replacements={
-            "{TUNNEL-DOMAIN-TLD}": tunnel_domain_tld,
-            "{TLD_SERVER_IP}": TLD_SERVER_IP,
-            "{TUNNEL_DOMAINS}": tunnel_domains_list,
             "{ZONE_BLOCKS}": root_zone_blocks,
             "{VALIDATE_EXCEPT_BLOCK}": validate_except_block,
         }
@@ -122,9 +144,6 @@ def generate_all_configs(tunneling_domains: list[str],
         output_file=f"{output_dir}/resolver/config/named.conf",
         replacements={
             "{PUBLIC_IP_RESOLVER}": public_resolver,
-            "{ROOT_SERVER_IP}": ROOT_SERVER_IP,
-            "{TUNNEL_DOMAIN}": tunnel_domain,
-            "{TUNNEL_DOMAINS}": tunnel_domains_list,
             "{ZONE_BLOCKS}": resolver_zone_blocks,
             "{VALIDATE_EXCEPT_BLOCK}": validate_except_block,
         }

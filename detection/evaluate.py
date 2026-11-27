@@ -1,16 +1,328 @@
+"""Detector loading and the peacetime and wartime loops.
+
+``load_detectors()`` imports the detector packages, ``run_peacetime()`` feeds
+benign traffic to them, ``generate_allowlists()`` turns peacetime alarms into
+allowlists, and ``run_wartime()`` feeds one window and evaluates every
+detector on it. The phase stop events shared with ``main.py`` live here too.
+"""
 import os
 import importlib
 import inspect
 import threading
 import logging
-import time
-from detection.detector_base.readfile import readjson
-from detection.detector_base.feature_extraction import get_registered_domain, is_response, extract_record_type, extract_subdomain_string, json_safe_get, get_fqdn, validate_fqdn
+from detection.detector_base.readfile import log_end_offset
+from detection.detector_base.feature_extraction import (
+    get_registered_domain, load_domain_list, is_response, get_fqdn, validate_fqdn,
+    query_payload_bytes, answer_payload_bytes,
+    DEFAULT_SUBDOMAIN_CASE, apply_subdomain_case_to_event,
+)
 import json
-from datetime import datetime
 
 # Get the logger configured in main.py
 logger = logging.getLogger('dns_detector')
+
+
+def load_global_allowlist(allowlist_path: str, base_dir=None) -> set:
+    """Load the global allowlist.
+
+    Args:
+        allowlist_path: Path to the allowlist file. Empty means no allowlist.
+            A relative path is resolved against ``base_dir``.
+        base_dir: Directory of the configuration file; relative paths are
+            resolved against it instead of the working directory.
+
+    Returns:
+        set: Registered domains (eTLD+1), see ``load_domain_list()``.
+
+    Raises:
+        FileNotFoundError: If the configured file does not exist.
+    """
+    if not allowlist_path:
+        return set()
+    path = allowlist_path
+    if base_dir is not None and not os.path.isabs(path):
+        path = os.path.join(str(base_dir), path)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Global allowlist not found: {path}")
+    global_allowlist = load_domain_list(path)
+    logger.info(f"[+] Global allowlist: {len(global_allowlist)} domains from {path}")
+    return global_allowlist
+
+
+def save_results(results_file: str, results: list, metadata: dict) -> None:
+    """Save one window's ``metadata`` and per-detector ``results`` to a JSON file."""
+    output = {
+        "metadata": metadata,
+        "detectors": results
+    }
+    with open(results_file, 'w') as f:
+        json.dump(output, f, indent=2)
+    logger.info(f"[+] Results saved to {results_file}")
+
+
+def generate_allowlists(detectors: list, global_allowlist: set) -> None:
+    """Generate and assign allowlists to detectors after peacetime."""
+    for detector in detectors:
+        detector_name = type(detector).__name__
+        # Get allowlist from detector's alarms (from peacetime)
+        local_allowlist = detector.alarms
+        detector.reset(clear_allowlist=True, reset_state=False)
+        detector.allowlist = local_allowlist.union(global_allowlist)
+        logger.info(f"[+] {detector_name} allowlist size: {len(detector.allowlist)}")
+
+
+def run_peacetime(detectors: list, log_generator, tunneling_domains: set,
+                  subdomain_case: str = DEFAULT_SUBDOMAIN_CASE) -> tuple:
+    """Run peacetime phase to build allowlists.
+
+    Sets ``peacetime_done`` when the phase has finished. ``subdomain_case``:
+    see ``run_wartime()``.
+
+    Returns:
+        tuple: (peace_logcount, alldomains)
+    """
+    try:
+        return _run_peacetime(detectors, log_generator, tunneling_domains, subdomain_case)
+    finally:
+        peacetime_done.set()
+
+
+def _run_peacetime(detectors: list, log_generator, tunneling_domains: set, subdomain_case: str) -> tuple:
+    """Peacetime loop; see ``run_peacetime()``."""
+    alldomains = set()
+    peace_logcount = 0
+    
+    # The caller clears peacetime_stop_event before arming the phase timer;
+    # clearing it here would swallow a stop that was already signalled.
+    while not peacetime_stop_event.is_set():
+        try:
+            logline = next(log_generator)
+        except StopIteration:
+            logger.warning(f"\n⚠ Log ended after {peace_logcount} lines")
+            break
+        
+        # Idle poll: the reader yields None so the stop event is re-checked.
+        if logline is None:
+            continue
+        apply_subdomain_case_to_event(logline, subdomain_case)
+        # Same guard as run_wartime(): events without a query name are skipped.
+        if get_fqdn(logline) is None:
+            continue
+
+        domain = get_registered_domain(logline)
+        if domain in tunneling_domains:
+            logger.warning(f"[!] WARNING! Tunneling domain {domain} seen during peacetime!")
+
+        if not validate_fqdn(logline) or not domain:
+            logger.debug(f"[!] Invalid FQDN detected: {get_fqdn(logline)}")
+            continue
+        
+        # Only update progress every 100 lines
+        if peace_logcount % 100 == 0:
+            logger.info(f"[PEACETIME] Processing line {peace_logcount} ({domain})", extra={'progress': True})
+        
+        peace_logcount += 1
+        
+        if domain:
+            alldomains.add(domain)
+
+        for detector in detectors:
+            detector.process_line(logline, False)
+    
+    return peace_logcount, alldomains
+
+
+def run_wartime(detectors: list, log_generator, tunneling_domains: set, global_allowlist: set,
+                expansion_factor: float = 1.0, transfer_event: threading.Event = None,
+                payload=None, subdomain_case: str = DEFAULT_SUBDOMAIN_CASE) -> tuple:
+    """Run one wartime window and evaluate all detectors on it.
+
+    The domain universe used for TN and FPR contains only the registered
+    domains seen in this wartime window. Domains seen during peacetime or in
+    other DNSExfiltrator configurations are never part of it.
+
+    Args:
+        detectors: Detector instances to feed.
+        log_generator: Generator yielding parsed log events (or None when idle).
+        tunneling_domains: Ground-truth tunneling domains for this window.
+        global_allowlist: Global allowlist (reported per detector).
+        expansion_factor: Encoding expansion factor of the tunnel traffic in
+            this window, used to estimate the real uplink data volume.
+        transfer_event: Set when the exfiltrated file has arrived. The window
+            then keeps reading until it has caught up with the log as it was at
+            that moment (or the log is idle), and ends with stop reason
+            ``transfer_complete``. ``None`` disables this.
+        payload: ``DNSExfilPayload`` of the configuration (DNSExfiltrator mode).
+            Tunnel queries are then split into init, data and dilution queries,
+            and every result gets ``net_up_bytes``: the file bytes of the unique
+            data chunks that passed before the detector's alarm (exact, from the
+            chunk length and the encoding). ``estimated_real_traffic_up_bytes``
+            is set to the same value. Without it the estimate stays
+            ``traffic_volume_up_bytes / expansion_factor``.
+        subdomain_case: Case of the subdomain labels as the detectors get
+            them (``preserve``, ``lowercase``, ``uppercase`` or ``0x20``),
+            emulating where they observe DNS. Every event's ``dns.qname`` is
+            rewritten before anything reads it; ground truth and payload
+            accounting compare case-insensitively and are not affected.
+
+    Returns:
+        tuple: (results, logcount, tunnel_count, seen_tunnels, alldomains, counts).
+        ``logcount`` and ``tunnel_count`` count log lines (queries and
+        responses). ``alldomains`` is the set of registered domains seen in
+        this window. ``counts`` splits lines into ``total_queries``,
+        ``total_responses``, ``tunnel_queries`` and ``tunnel_responses``, plus
+        ``interrupted`` (True if Ctrl+C ended the window early) and
+        ``stop_reason``: ``transfer_complete``, ``all_detected``, ``timer``,
+        ``log_ended``, ``interrupted``, or a reason passed to
+        ``request_wartime_stop`` (``user_skip``, ``user_stop``).
+    """
+    alldomains = set()
+    tunneling_domains_seen = {domain: False for domain in tunneling_domains}
+    
+    logcount = 0
+    tunnel_count = 0
+    # tunnel_up_bytes / tunnel_down_bytes: the whole tunnel payload of the window,
+    # the denominator of a detector's ULV% / DLV% (share leaked before its alarm).
+    counts = {"total_queries": 0, "total_responses": 0, "tunnel_queries": 0, "tunnel_responses": 0,
+              "tunnel_up_bytes": 0, "tunnel_down_bytes": 0}
+    if payload is not None:
+        # tunnel_net_up_bytes: file bytes of the unique data chunks in the window.
+        counts.update({"tunnel_net_up_bytes": 0, "tunnel_data_queries": 0, "tunnel_init_queries": 0,
+                       "tunnel_dilution_queries": 0, "tunnel_retried_queries": 0})
+    window_chunks = set()
+    detector_chunks = [set() for _ in detectors]
+    detector_net = [0] * len(detectors)
+    
+    # The caller clears wartime_stop_event before arming the phase timer;
+    # clearing it here would swallow a stop that was already signalled.
+    interrupted = False
+    stop_reason = None
+    drain_target = None
+    try:
+        while not wartime_stop_event.is_set():
+            if transfer_event is not None and transfer_event.is_set():
+                if drain_target is None:
+                    path = getattr(log_generator, "path", None)
+                    drain_target = log_end_offset(path) if path else 0
+                    logger.info("[+] Transfer complete - finishing the window after catching up with the log")
+                if getattr(log_generator, "offset", drain_target) >= drain_target:
+                    stop_reason = "transfer_complete"
+                    break
+            try:
+                logline = next(log_generator)
+            except StopIteration:
+                logger.warning(f"\n⚠ Log ended after {logcount} lines")
+                stop_reason = "log_ended"
+                break
+
+            # Idle poll: the reader yields None so the stop events are re-checked.
+            # Idle after the transfer finished means the log has been caught up.
+            if logline is None:
+                if drain_target is not None:
+                    stop_reason = "transfer_complete"
+                    break
+                continue
+            apply_subdomain_case_to_event(logline, subdomain_case)
+            if get_fqdn(logline) is None:
+                continue
+
+            domain = get_registered_domain(logline)
+        
+            if not validate_fqdn(logline) or domain == "":
+                logger.debug(f"[!] Invalid FQDN detected: {get_fqdn(logline)}")
+                continue
+
+
+            if domain:
+                alldomains.add(domain)
+
+            # Only update progress every 100 lines
+            if logcount % 100 == 0:
+                logger.info(f"[WARTIME] Processing line {logcount} ({domain})", extra={'progress': True})
+        
+            istunnel = False
+            logcount += 1
+            response = is_response(logline)
+            counts["total_responses" if response else "total_queries"] += 1
+        
+            if domain in tunneling_domains:
+                tunneling_domains_seen[domain] = True
+                istunnel = True
+                tunnel_count += 1
+                counts["tunnel_responses" if response else "tunnel_queries"] += 1
+                if response:
+                    counts["tunnel_down_bytes"] += answer_payload_bytes(logline)
+                else:
+                    counts["tunnel_up_bytes"] += query_payload_bytes(logline)
+                logger.debug(f"[!] Tunneling seen...({domain})")
+        
+            chunk = payload.classify(logline) if payload is not None and istunnel else None
+            if chunk is not None:
+                kind, key, size = chunk
+                counts[f"tunnel_{kind}_queries"] += 1
+                if kind == "data":
+                    if key in window_chunks:
+                        counts["tunnel_retried_queries"] += 1
+                    else:
+                        window_chunks.add(key)
+                        counts["tunnel_net_up_bytes"] += size
+
+            for detector in detectors:
+                detector.process_line(logline, istunnel)
+
+            # Net leakage per detector: data chunks that passed before its alarm
+            # (same rule as traffic_volume_up_bytes: the alarming line is not counted).
+            if chunk is not None and chunk[0] == "data":
+                for i, detector in enumerate(detectors):
+                    if domain not in detector.alarms and chunk[1] not in detector_chunks[i]:
+                        detector_chunks[i].add(chunk[1])
+                        detector_net[i] += chunk[2]
+
+            done = True
+
+            for detector in detectors:
+                if detector.alarms.intersection(tunneling_domains) != tunneling_domains or len(tunneling_domains) == 0:
+                    done = False
+                    break
+
+            if done:
+                logger.info("[+] All tunneling domains detected. Stopping Wartime...")
+                stop_reason = "all_detected"
+                wartime_stop_event.set()
+    
+    except KeyboardInterrupt:
+        # Ctrl+C: stop reading and evaluate the partial window so its
+        # results can still be written (status 'interrupted').
+        interrupted = True
+        logger.warning("\n[!] Interrupted: evaluating the partial wartime window")
+    counts["interrupted"] = interrupted
+    external, _external_stop["reason"] = _external_stop["reason"], None
+    counts["stop_reason"] = "interrupted" if interrupted else (stop_reason or external or "timer")
+    
+    seen_tunnels = set([domain for domain, seen in tunneling_domains_seen.items() if seen])
+    
+    if payload is not None:
+        counts["exfil_file_bytes"] = payload.announced_size
+        counts["init_encoding"] = payload.announced_encoding
+
+    results = []
+    for i, detector in enumerate(detectors):
+        logger.debug(f"\n=== Evaluation of {type(detector).__name__} ===")
+        result = detector.evaluate(
+            seen_tunnels, alldomains, logcount, counts["tunnel_queries"], global_allowlist,
+            tunneling_responses=counts["tunnel_responses"],
+            expansion_factor=expansion_factor,
+        )
+        if payload is not None:
+            result["net_up_bytes"] = detector_net[i]
+            result["estimated_real_traffic_up_bytes"] = detector_net[i]
+            result["net_volume_method"] = "decoded"
+        else:
+            result["net_volume_method"] = "expansion_factor"
+        results.append(result)
+    
+    return results, logcount, tunnel_count, seen_tunnels, alldomains, counts
+
 
 def cfg_safe_get(cfg: dict, path: list[str], default: any = None) -> any:
     """safe get values from yaml with default values"""
@@ -21,8 +333,19 @@ def cfg_safe_get(cfg: dict, path: list[str], default: any = None) -> any:
         cur = cur[key]
     return cur
 
-def format_duration(seconds: int) -> str:
-    """Convert seconds to human-readable format (e.g., '1h20m' or '5m30s')"""
+def format_duration(seconds: float) -> str:
+    """Convert seconds to a human-readable duration.
+
+    The value is rounded to whole seconds. Seconds are omitted once the
+    duration reaches an hour.
+
+    Args:
+        seconds: Duration in seconds (int or float).
+
+    Returns:
+        str: For example ``'1h20m'``, ``'5m30s'`` or ``'0s'``.
+    """
+    seconds = int(round(seconds or 0))
     hours = seconds // 3600
     minutes = (seconds % 3600) // 60
     secs = seconds % 60
@@ -37,294 +360,82 @@ def format_duration(seconds: int) -> str:
     
     return "".join(parts) or "0s"
 
-detector_ready = threading.Event()
+# Phase stop events shared with main.py (set by PhaseTimer or by early stop).
 wartime_stop_event = threading.Event()
+# Set when the exfiltrated file has arrived at the server (see main.TransferWatcher).
+transfer_complete_event = threading.Event()
+# Reason for a stop requested from outside the timer (dashboard controls).
+_external_stop = {"reason": None}
+
+
+def reset_wartime_stop() -> None:
+    """Clear the stop event and any pending external stop reason (new window)."""
+    _external_stop["reason"] = None
+    wartime_stop_event.clear()
+
+
+def request_wartime_stop(reason: str) -> None:
+    """End the running wartime window now and record ``reason`` as its stop reason."""
+    _external_stop["reason"] = reason
+    wartime_stop_event.set()
 peacetime_stop_event = threading.Event()
 peacetime_done = threading.Event()
-tunnel_started_event = threading.Event()
-tunnel_phase_start_event = threading.Event()
-tunnel_phase_complete_event = threading.Event()
 
 def load_detectors(detectors_path, active_detectors=None):
-    """Load detector classes dynamically, filtered by active_detectors list."""
+    """Load and instantiate detectors from ``detectors_path``.
+
+    Every subdirectory with a ``detector.py`` is a detector package. Only
+    concrete ``Detector`` subclasses defined in that ``detector.py`` are used;
+    imported helper classes and other classes are ignored.
+
+    Error policy: a detector listed in ``active_detectors`` that is missing or
+    fails to import or instantiate aborts the run. Without an active list,
+    a failing detector is logged with its traceback and skipped.
+
+    Args:
+        detectors_path: Directory containing one subdirectory per detector.
+        active_detectors: Directory names to load, or None for all.
+
+    Returns:
+        list: Detector instances.
+
+    Raises:
+        RuntimeError: If an explicitly requested detector cannot be loaded.
+    """
+    from detection.detector_base.detector_base import Detector
+
+    requested = set(active_detectors) if active_detectors is not None else None
     detectors = []
-    for folder in os.listdir(detectors_path):
+    failures = []
+    found = set()
+    for folder in sorted(os.listdir(detectors_path)):
         folder_path = os.path.join(detectors_path, folder)
         if not os.path.isdir(folder_path) or folder.startswith("__"):
             continue
-        # Filter by active_detectors if provided
-        if active_detectors is not None and folder not in active_detectors:
+        if requested is not None and folder not in requested:
             logger.info(f"⊘ Skipping {folder} (not in active detectors)")
             continue
-        detector_py_path = os.path.join(folder_path, "detector.py")
-        if not os.path.isfile(detector_py_path):
+        if not os.path.isfile(os.path.join(folder_path, "detector.py")):
             logger.warning(f"⚠ Skipping {folder} (no detector.py)")
             continue
+        found.add(folder)
         logger.info(f"✓ Loading: {folder}")
         try:
             module = importlib.import_module(f"detection.detectors.{folder}.detector")
-            for name, obj in inspect.getmembers(module, inspect.isclass):
-                if obj.__module__ == module.__name__:
-                    detectors.append(obj)
-        except ImportError as e:
-            logger.error(f"✗ Import error in {folder}: {e}")
+            classes = [obj for _, obj in inspect.getmembers(module, inspect.isclass)
+                       if obj.__module__ == module.__name__ and issubclass(obj, Detector)
+                       and not inspect.isabstract(obj)]
+            if not classes:
+                raise ImportError(f"no concrete Detector subclass in {folder}/detector.py")
+            for cls in classes:
+                detectors.append(cls())
+        except Exception as e:
+            logger.error(f"✗ Failed to load {folder}: {e}", exc_info=True)
+            failures.append(folder)
+
+    missing = sorted(requested - found) if requested is not None else []
+    if missing:
+        raise RuntimeError(f"Requested detectors not found in {detectors_path}: {missing}")
+    if requested is not None and failures:
+        raise RuntimeError(f"Requested detectors failed to load: {failures}")
     return detectors
-
-def evaluate(detector_path: str, logfile: str, tunneling_domains: list[str],
-             allowlist_path: str, results_file: str, cfg: dict,
-             active_detectors: list[str] = None) -> dict:
-
-    ### INITILIZATION ###
-    detector_classes = load_detectors(detector_path, active_detectors)
-    detectors = [cls() for cls in detector_classes]
-    logger.info(f"\n{len(detectors)} detectors loaded: {[type(d).__name__ for d in detectors]}\n")
-    alldomains = set()
-    # Use shorter timeout to allow frequent phase event checking
-    log_generator = readjson(logfile, timeout_seconds=1, max_timeouts=3)
-
-    tunneling_domains = set(tunneling_domains)
-
-    global_allowlist = set()
-
-    if allowlist_path:
-        with open(allowlist_path, 'r') as file:
-            global_allowlist.update(file.read().splitlines())
-
-
-    ### PEACETIME ###
-    # Read timing configuration - all values in config are in MINUTES, convert to seconds
-    # Support both integer and float values (e.g., 1 or 0.5 for 1 minute or 30 seconds)
-    # Get wartime_duration with backward compatibility
-    wartime_duration_config = cfg_safe_get(cfg, ["timing", "wartime_duration"], None)
-    duration_config = cfg_safe_get(cfg, ["timing", "duration"], 60)  # minutes
-    
-    if wartime_duration_config is None:
-        # Fallback to old 'duration' config key for backward compatibility
-        wartime_duration = float(duration_config) * 60  # Convert minutes to seconds
-    else:
-        wartime_duration = float(wartime_duration_config) * 60  # Convert minutes to seconds
-    
-    # Get peacetime_duration
-    peacetime_duration_config = cfg_safe_get(cfg, ["timing", "peacetime_duration"], None)
-    if peacetime_duration_config is None:
-        # Default to duration_config / 3 if not specified (use float division)
-        peacetime_duration = (float(duration_config) / 3) * 60  # Convert minutes to seconds
-    else:
-        peacetime_duration = float(peacetime_duration_config) * 60  # Convert minutes to seconds
-    
-    if not peacetime_duration:
-        peacetime_duration = 0
-
-    detector_ready.set()
-
-    start_timestamp = datetime.now()
-
-    if peacetime_duration != 0:
-
-        logger.info("\n" + "="*60)
-        logger.info("PEACETIME PHASE - Building Allowlist")
-        logger.info("="*60)
-
-        peace_logcount = 0
-
-        while not peacetime_stop_event.is_set():
-            try:
-                logline = next(log_generator)
-            except StopIteration:
-                logger.warning(f"\n⚠ Log ended after {peace_logcount} lines")
-                break
-            
-            # Handle timeout from generator
-            if logline is None:
-                time.sleep(0.01)
-                continue
-
-            domain = get_registered_domain(logline)
-            if domain in tunneling_domains:
-                logger.warning(f"[!] WARNING! Tunneling domain {domain} seen during peacetime!")
-
-            if not validate_fqdn(logline) or not domain:
-                logger.debug(f"[!] Invalid FQDN detected: {get_fqdn(logline)}")
-                continue
-            
-            # Only update progress every 500 lines
-            if peace_logcount % 100 == 0:
-                logger.info(f"[PEACETIME] Processing line {peace_logcount} ({domain})", extra={'progress': True})
-            
-            peace_logcount += 1
-
-            for detector in detectors:
-                detector.process_line(logline, False)
-
-
-
-    # Pfade zu den gespeicherten detektorspezifischen Allowlists
-    saved_allowlists_dir = cfg_safe_get(cfg, ["allowlist", "local_allowlist_dir"], None)
-
-    for detector in detectors:
-        detector_name = type(detector).__name__
-
-        if peacetime_duration != 0:
-            # Frisch aus Peacetime generiert
-            local_allowlist = detector.alarms
-        elif saved_allowlists_dir:
-            # Aus gespeicherter Datei laden
-            path = os.path.join(saved_allowlists_dir, f"{detector_name.lower()}.txt")
-            local_allowlist = set()
-            if os.path.exists(path):
-                with open(path, 'r') as f:
-                    local_allowlist = set(f.read().splitlines())
-                logger.info(f"[+] {detector_name}: loaded saved allowlist from {path}")
-            else:
-                logger.warning(f"[!] {detector_name}: no saved allowlist found at {path}")
-        else:
-            local_allowlist = set()
-
-        detector.reset()
-        detector.allowlist = local_allowlist.union(global_allowlist)
-        logger.info(f"[+] {detector_name} allowlist size: {len(detector.allowlist)}")
-
-    peacetime_done.set()
-
-    # WARTIME
-    
-
-    tunneling_domains_seen = {domain: False for domain in tunneling_domains}
-    
-    logcount = 0
-    tunnel_count = 0
-
-    while not wartime_stop_event.is_set():
-        
-        try:
-            logline = next(log_generator)
-        except StopIteration:
-            logger.warning(f"\n⚠ Log ended after {logcount} lines")
-            break 
-
-        # Handle timeout from generator
-        if logline is None:
-            time.sleep(0.001)
-            continue
-        if get_fqdn(logline) is None:
-            continue
-
-        domain = get_registered_domain(logline)
-        
-        if not validate_fqdn(logline) or domain == "":
-            logger.debug(f"[!] Invalid FQDN detected: {get_fqdn(logline)}")
-            continue
-
-        domain = domain.lower()
-
-        if domain and domain not in alldomains:
-            alldomains.add(domain)
-
-        # Only update progress every 500 lines
-        if logcount % 100 == 0:
-            logger.info(f"[WARTIME] Processing line {logcount} ({domain})", extra={'progress': True})
-        
-        istunnel = False
-        logcount += 1
-        
-        if domain in tunneling_domains:
-            tunneling_domains_seen[domain] = True
-            istunnel = True
-            tunnel_count += 1
-            logger.debug(f"[!] Tunneling seen...({domain})")
-        
-        for detector in detectors:
-            detector.process_line(logline, istunnel)
-
-        done = True
-
-        for detector in detectors:
-            if detector.alarms.intersection(tunneling_domains) != tunneling_domains or len(tunneling_domains) == 0:
-                done = False
-                break
-
-        if done:
-            logger.info("[+] All tunneling domains detected. Stopping Wartime...")
-            wartime_stop_event.set()
-    
-    end_timestamp = datetime.now()
-    
-    # Clear the progress line
-    logger.info("")  
-    
-    logger.info("\n" + "="*60)
-    logger.info("EVALUATION PHASE - Computing Metrics")
-    logger.info("="*60)
-    
-    seen_tunnels = set([domain for domain, seen in tunneling_domains_seen.items() if seen])
-    
-    results = []
-    for detector in detectors:
-        logger.info(f"\n=== Evaluation of {type(detector).__name__} ===")
-        results.append(detector.evaluate(seen_tunnels, alldomains, logcount, tunnel_count, global_allowlist))
-        logger.info("")
-    
-    # Build comprehensive metadata
-    metadata = {
-        "experiment": {
-            "name": cfg_safe_get(cfg, ['global', 'name'], 'unknown'),
-            "description": cfg_safe_get(cfg, ['global', 'description']),
-            "start_timestamp": start_timestamp.isoformat(),
-            "end_timestamp": end_timestamp.isoformat(),
-            "wartime_duration": format_duration(wartime_duration),
-            "peacetime_duration": format_duration(peacetime_duration),
-            "actual_runtime": format_duration((end_timestamp - start_timestamp).total_seconds()),
-        },
-        "traffic_config": {
-            "benign": {
-                "enabled": cfg_safe_get(cfg, ['traffic', 'benign', 'enabled'], False),
-                "pcap": cfg_safe_get(cfg, ['traffic', 'benign', 'pcap'], ''),
-                "pps": cfg_safe_get(cfg, ['traffic', 'benign', 'pps'], 0),
-                "loop": cfg_safe_get(cfg, ['traffic', 'benign', 'loop'], False)
-            },
-            "wildcard": {
-                "enabled": cfg_safe_get(cfg, ['traffic', 'wildcard', 'enabled'], False),
-                "pczap": cfg_safe_get(cfg, ['traffic', 'wildcard', 'pcap'], ''),
-                "pps": cfg_safe_get(cfg, ['traffic', 'wildcard', 'pps'], 0),
-                "loop": cfg_safe_get(cfg, ['traffic', 'wildcard', 'loop'], False)
-            },
-            "tunnel": {
-                "replay_enabled": cfg_safe_get(cfg, ['traffic', 'tunnel', 'replay'], False),
-                "pcap": cfg_safe_get(cfg, ['traffic', 'tunnel', 'pcap'], ''),
-                "pps": cfg_safe_get(cfg, ['traffic', 'tunnel', 'pps'], 0),
-                "loop": cfg_safe_get(cfg, ['traffic', 'tunnel', 'loop'], False),
-                "tunneling_domains": list(tunneling_domains),
-                "tunneling_domains_seen": list(seen_tunnels),
-                "tunnel_server_ip": cfg_safe_get(cfg, ['traffic', 'tunnel', 'tunnel_server_ip'], ''),
-                "expansion_factor": cfg_safe_get(cfg, ['traffic', 'tunnel', 'expansion_factor'], 1)
-            },
-            "pcap_path": cfg_safe_get(cfg, ['traffic', 'pcap_path'], ''),
-            "allowlist_path": cfg_safe_get(cfg, ["allowlist", "local_allowlist_dir"], None)
-        },
-        "dataset_statistics": {
-            "total_loglines": logcount,
-            "tunnel_loglines": tunnel_count,
-            "tunnel_percentage": (tunnel_count / logcount * 100) if logcount > 0 else 0,
-            "unique_domains": len(alldomains),
-            "logfile": logfile
-        },
-        "global_config": {
-            "public_resolver": cfg_safe_get(cfg, ['global', 'public_resolver'], ''),
-            "detector_path": str(detector_path)
-        },
-        "complete_config": cfg
-    }
-    
-    # Comprehensive output structure
-    output = {
-        "metadata": metadata,
-        "detectors": results
-    }
-    
-    # Save results to file
-    with open(results_file, 'w') as f:
-        json.dump(output, f, indent=2)
-    
-    logger.info(f"[+] Results saved to {results_file}")
-    
-    return output
