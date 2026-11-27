@@ -204,9 +204,11 @@ if __name__ == '__main__':
                         try:
                             decoded_bytes = fromBase32Map(initBuffer)
                             msg = decoded_bytes.decode('utf-8')
+                            # "<encoding>|<file size>|": only the trailing '|' marks the
+                            # init as complete; a prefix like "1|303" of "1|3030|" is not.
                             parts = msg.split('|')
-                            if len(parts) == 2:
-                                encoding_num, fileSize_str = parts
+                            if len(parts) == 3 and parts[2] == '' and parts[1].isdigit():
+                                encoding_num, fileSize_str = parts[0], parts[1]
                                 totalFileSize = int(fileSize_str)
                                 if encoding_num in encoding_map:
                                     encoding_type = encoding_map[encoding_num]
@@ -259,43 +261,45 @@ if __name__ == '__main__':
                         udps.sendto(reply.pack(), addr)
                         continue
                     
-                    currentEntropy = entropy(rawData)
-                    entropies.append(currentEntropy)
-
-                    # Decode based on encoding type
-                    if encoding_type == 'base32':
-                        decoded = fromBase32(rawData)
-                    elif encoding_type == 'hex':
-                        decoded = fromHex(rawData)
-                    else:  # base32map
-                        base32_string = ''
-                        index = 0
-                        while index < len(rawData):
-                            word = rawData[index:index+3]
-                            if word in map_words:
-                                base32_string += base32Alphabet[map_words.index(word)]
-                            index += 3
-                        mod = len(base32_string) % 8
-                        padding = {2: "======", 4: "====", 5: "===", 7: "="}.get(mod, "")
-                        decoded = b32decode(base32_string + padding)
-
-                    # Decrypt - RC4 maintains state between calls
-                    decrypted = rc4Decryptor.binaryDecrypt(decoded)
-
-                    if len(decrypted) < 1:
-                        print(color("[!] Decrypted chunk too short"))
-                        continue
-
-                    # Sequence number is from label (plaintext), decrypted data is pure payload
-                    data_chunk = decrypted  # No sequence byte to strip
-
                     # FIX for B4-RETRY-004: Track processed sequence numbers
                     # Accept current, previous, or any already-processed (retry)
                     expected_seq_number = requestIndex % 256
-                    
+
                     if seq_number == expected_seq_number:
-                        # New chunk - process and increment
-                        fileData.extend(data_chunk)
+                        # New chunk: decode, decrypt and append. Only new chunks are
+                        # decrypted: the client encrypts each chunk once and resends
+                        # the same bytes on a retry, so decrypting a duplicate (client
+                        # retry, dig or resolver retransmission) would advance the RC4
+                        # keystream past the client's and corrupt every later chunk.
+                        currentEntropy = entropy(rawData)
+                        entropies.append(currentEntropy)
+
+                        # Decode based on encoding type
+                        if encoding_type == 'base32':
+                            decoded = fromBase32(rawData)
+                        elif encoding_type == 'hex':
+                            decoded = fromHex(rawData)
+                        else:  # base32map
+                            base32_string = ''
+                            index = 0
+                            while index < len(rawData):
+                                word = rawData[index:index+3]
+                                if word in map_words:
+                                    base32_string += base32Alphabet[map_words.index(word)]
+                                index += 3
+                            mod = len(base32_string) % 8
+                            padding = {2: "======", 4: "====", 5: "===", 7: "="}.get(mod, "")
+                            decoded = b32decode(base32_string + padding)
+
+                        # Decrypt - RC4 maintains state between calls
+                        decrypted = rc4Decryptor.binaryDecrypt(decoded)
+
+                        if len(decrypted) < 1:
+                            print(color("[!] Decrypted chunk too short"))
+                            continue
+
+                        # Sequence number is from label (plaintext), decrypted data is pure payload
+                        fileData.extend(decrypted)
                         requestIndex += 1
                         processed_seqs.add(seq_number)
                     elif seq_number in processed_seqs:

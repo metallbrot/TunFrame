@@ -1,15 +1,19 @@
-# Phase C: Differential Contract Tests
+# DNSExfiltrator protocol tests (Phase C and E)
 
 ## Overview
 
-This test suite verifies the contract between the DNS Exfiltrator client (C#) and server (Python) implementations, and demonstrates all 25 defects identified in Phase B.
+This test suite verifies the contract between the DNS Exfiltrator client (C#) and server (Python) implementations, and demonstrates all 25 defects identified in Phase B. `test_phase_d_fixes.py` verifies the fixes applied in Phase D (see `PHASE_E_SUMMARY.md`).
+
+Both suites are self-contained Python re-implementations of the client and server logic; they do not run `dnsExfiltrator.cs` or `dnsExfiltrator.py`. They model the protocol as it was during the review: the sequence number was a byte inside the encrypted chunk, and base64 was still an encoding. Since then the sequence number travels in its own label and base64 was removed from the tool; the current protocol is described in [documentation/dnsexfiltrator.md](../../documentation/dnsexfiltrator.md).
 
 ## Structure
 
 ```
 docker/dnsexfiltrator-tests/
-├── test_contract_differential.py  # Main test suite
+├── test_contract_differential.py  # Phase C: differential contract tests (22)
+├── test_phase_d_fixes.py          # Phase E: verification of the Phase D fixes (5)
 ├── requirements.txt               # Test dependencies
+├── PHASE_E_SUMMARY.md             # Results of the Phase E verification
 └── README.md                      # This file
 ```
 
@@ -53,22 +57,17 @@ docker/dnsexfiltrator-tests/
 
 ### Prerequisites
 
+No extra packages are needed: the suites use only the Python standard library, so the project's virtual environment is enough.
+
 ```bash
-cd /Users/maltemathiak/Documents/it_projects/tun_frame/TunFrame/docker/dnsexfiltrator-tests
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+cd docker/dnsexfiltrator-tests
 ```
 
 ### Execute Tests
 
 ```bash
-python test_contract_differential.py
-```
-
-Or with verbose output:
-```bash
-python -m unittest test_contract_differential -v
+python3 -m unittest test_contract_differential -v   # Phase C
+python3 test_phase_d_fixes.py                        # Phase E
 ```
 
 ## Expected Output

@@ -4,7 +4,7 @@ The DNSExfiltrator client (``docker/dnsexfiltrator-client``) sends three kinds
 of queries to the tunnel domain:
 
 ``init``      ``<part of the init>.<domain>``: the base32map-encoded text
-              ``<encoding number>|<file size>``, split over several queries when
+              ``<encoding number>|<file size>|``, split over several queries when
               it is longer than ``label_max_size``. No file data, but it tells
               the size of the transferred (zipped, encrypted) file.
 ``data``      ``<sequence number>.<encoded chunk>.<domain>``: the file.
@@ -49,7 +49,11 @@ def chunk_bytes(chunk: str, encoding: str):
 
 
 def decode_init(text: str):
-    """Decode a complete init text to ``(encoding number, file size)``, else ``None``."""
+    """Decode a complete init text to ``(encoding number, file size)``, else ``None``.
+
+    The init is ``<encoding number>|<file size>|``; the trailing ``|`` marks it
+    complete, so a prefix such as ``1|303`` of ``1|3030|`` is not mistaken for it.
+    """
     if not text or len(text) % 3:
         return None
     try:
@@ -57,10 +61,10 @@ def decode_init(text: str):
         plain = base64.b32decode(b32 + "=" * (-len(b32) % 8)).decode("ascii")
     except (KeyError, binascii.Error, UnicodeDecodeError, ValueError):
         return None
-    number, sep, size = plain.partition("|")
-    if not sep or not number.isdigit() or not size.isdigit():
+    parts = plain.split("|")
+    if len(parts) != 3 or parts[2] or not parts[0].isdigit() or not parts[1].isdigit():
         return None
-    return number, int(size)
+    return parts[0], int(parts[1])
 
 
 class DNSExfilPayload:

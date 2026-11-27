@@ -389,11 +389,13 @@ os.unlink(_tp)
 # Net exfiltration volume decoded from the DNSExfiltrator query format (init / data / dilution).
 from detection import exfil_payload as xp
 import base64 as _b64
-_b32 = _b64.b32encode(b"1|3030").decode().rstrip("=")
-_init = "".join(xp.WORDS["ABCDEFGHIJKLMNOPQRSTUVWXYZ234567".index(c)] for c in _b32)
+_words = lambda raw: "".join(xp.WORDS["ABCDEFGHIJKLMNOPQRSTUVWXYZ234567".index(c)]
+                             for c in _b64.b32encode(raw).decode().rstrip("="))
+_init = _words(b"1|3030|")
 _sizes = (xp.chunk_bytes("a" * 63, "base32"), xp.chunk_bytes("kit" * 21, "base32map"), xp.chunk_bytes("ab" * 31, "hex"))
-check("X1 chunk sizes per encoding; init decoded also when split",
-      _sizes == (39, 13, 31) and xp.decode_init(_init) == ("1", 3030) and xp.decode_init(_init[:9]) is None,
+check("X1 chunk sizes per encoding; init decoded also when split, never from a prefix",
+      _sizes == (39, 13, 31) and xp.decode_init(_init) == ("1", 3030) and xp.decode_init(_init[:9]) is None
+      and xp.decode_init(_words(b"1|303")) is None and xp.decode_init(_words(b"1|3030")) is None,
       "63 base32 chars=%d B, 21 base32map words=%d B, 62 hex chars=%d B; init %s" % (_sizes + (xp.decode_init(_init),)))
 
 class AlarmAfter(Detector):

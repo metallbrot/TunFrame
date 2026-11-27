@@ -1,5 +1,7 @@
 # Phase E: Testing and Validation - Summary
 
+> Historical record of the protocol review. The protocol has changed since (sequence number in its own label, base64 removed); see [documentation/dnsexfiltrator.md](../../documentation/dnsexfiltrator.md) for the current state.
+
 **Status**: COMPLETE  
 **Date**: 2024  
 **Objective**: Verify Phase D fixes work correctly

