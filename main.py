@@ -318,7 +318,7 @@ def managed_replay_start(label: str, pcap: str, pps) -> None:
     logfile = _replay_logfile(label)
     inner = (
         f"mkdir -p {REPLAY_LOG_DIR} && cd /app && "
-        f"exec tcpreplay {rate}-i replay0 {pcap} > {logfile} 2>&1"
+        f"exec tcpreplay {rate}-i replay0 {shlex.quote(pcap)} > {shlex.quote(logfile)} 2>&1"
     )
     rate_desc = "original speed" if not rate else f"{pps} PPS"
     logger.info(f"[+] Starting {label} replay ({rate_desc}) from {pcap}")
