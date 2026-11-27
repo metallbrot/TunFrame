@@ -877,43 +877,54 @@ class RunControl:
     A request that arrives while no wartime window is open (server start,
     peacetime) is applied when the next window opens; a stop also ends
     peacetime and skips every remaining configuration.
+
+    ``handle()`` runs in the ControlWatcher thread, ``open_window()`` and
+    ``close_window()`` in the main thread; one lock keeps the window state
+    and the pending skip consistent between them, so a request is never
+    lost while a window opens or closes.
     """
 
     def __init__(self):
         self.stop_requested = threading.Event()
-        self._skip_pending = threading.Event()
+        self._lock = threading.Lock()
+        self._skip_pending = False
         self._window_open = False
 
     def handle(self, action: str) -> None:
-        if action == "stop_run":
-            logger.warning("[!] Dashboard: stop requested - evaluating the current window, then ending the run")
-            self.stop_requested.set()
-            peacetime_stop_event.set()
-            if self._window_open:
-                request_wartime_stop("user_stop")
-        elif action == "skip_config":
-            if REPORT is not None and REPORT.state.get("phase") == "wartime":
-                logger.warning("[!] Dashboard: skipping the running configuration")
+        """Apply a dashboard request (``stop_run`` or ``skip_config``)."""
+        with self._lock:
+            if action == "stop_run":
+                logger.warning("[!] Dashboard: stop requested - evaluating the current window, then ending the run")
+                self.stop_requested.set()
+                peacetime_stop_event.set()
                 if self._window_open:
-                    request_wartime_stop("user_skip")
+                    request_wartime_stop("user_stop")
+            elif action == "skip_config":
+                if REPORT is not None and REPORT.state.get("phase") == "wartime":
+                    logger.warning("[!] Dashboard: skipping the running configuration")
+                    if self._window_open:
+                        request_wartime_stop("user_skip")
+                    else:
+                        self._skip_pending = True
                 else:
-                    self._skip_pending.set()
-            else:
-                logger.info("[i] Dashboard: skip ignored - no wartime window is running")
+                    logger.info("[i] Dashboard: skip ignored - no wartime window is running")
 
     def open_window(self) -> None:
         """Arm a new wartime window and apply requests made before it opened."""
-        reset_wartime_stop()
-        self._window_open = True
-        if self.stop_requested.is_set():
-            request_wartime_stop("user_stop")
-        elif self._skip_pending.is_set():
-            self._skip_pending.clear()
-            request_wartime_stop("user_skip")
+        with self._lock:
+            reset_wartime_stop()
+            self._window_open = True
+            if self.stop_requested.is_set():
+                request_wartime_stop("user_stop")
+            elif self._skip_pending:
+                self._skip_pending = False
+                request_wartime_stop("user_skip")
 
     def close_window(self) -> None:
-        self._window_open = False
-        self._skip_pending.clear()
+        """Mark the window as closed; a skip still pending is dropped."""
+        with self._lock:
+            self._window_open = False
+            self._skip_pending = False
 
 
 RUN_CONTROL = RunControl()

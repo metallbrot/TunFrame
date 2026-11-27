@@ -686,4 +686,23 @@ _dup = (_dup_rejected({'profiles': [{'name': 'baseline'}]}), _dup_rejected({'pro
 check("V1 duplicate configuration names rejected", _dup == (True, True, False),
       "profile named baseline=%s, two profiles p=%s, distinct names=%s" % _dup)
 
+# V2: a skip requested while a configuration is starting applies when its window opens;
+# a skip still pending when a window closes is dropped.
+_vrep = RunReport(_pl.Path(tempfile.mkdtemp()), 'runcontrol test')
+_vrep.set_phase('wartime', 'cfg')
+_v_old, main.REPORT = main.REPORT, _vrep
+_vrc = main.RunControl()
+ev.reset_wartime_stop()
+_vrc.handle('skip_config')                      # no window open yet: pending, no stop yet
+_v_pending = not ev.wartime_stop_event.is_set()
+_vrc.open_window()
+_v_applied = ev.wartime_stop_event.is_set() and ev._external_stop["reason"] == "user_skip"
+_vrc.close_window(); _vrc.handle('skip_config'); _vrc.close_window(); _vrc.open_window()
+_v_dropped = not ev.wartime_stop_event.is_set()
+main.REPORT = _v_old
+ev.reset_wartime_stop()
+check("V2 pending skip applied when the window opens, dropped when it closes",
+      _v_pending and _v_applied and _v_dropped,
+      "pending=%s applied=%s dropped=%s" % (_v_pending, _v_applied, _v_dropped))
+
 sys.exit(1 if FAILS else 0)
