@@ -11,6 +11,7 @@ import logging
 import warnings
 from datetime import datetime
 import shutil
+import filecmp
 import copy
 import signal
 
@@ -2078,9 +2079,13 @@ def run_wartime_phase(
                 src_path = Path(filepath)
                 if src_path.exists():
                     dest_path = client_data_dir / src_path.name
-                    if not dest_path.exists():
+                    # Copy also when a different file of the same name is already there,
+                    # so the configured file is the one that is exfiltrated.
+                    if not dest_path.exists() or not filecmp.cmp(src_path, dest_path, shallow=False):
+                        replaced = dest_path.exists()
                         shutil.copy2(src_path, dest_path)
-                        logger.info(f"[+] Copied {src_path.name} to client data directory")
+                        logger.info(f"[+] {'Replaced' if replaced else 'Copied'} {src_path.name} "
+                                    f"in the client data directory")
                     client_filepath = src_path.name
                 else:
                     logger.warning(f"[!] File not found on host: {filepath}")
@@ -2283,7 +2288,7 @@ def run_wartime_phase(
             
             # Net volume: the tools' own numbers next to the decoded DNS traffic.
             counts["exfil_file_bytes_server"] = server_reported_file_size(server_log_offset)
-            source = client_data_dir / Path(client_filepath).name
+            source = client_data_dir / client_filepath  # the file the client read (may be in a subdirectory)
             if source.is_file():
                 counts["source_file_bytes"] = source.stat().st_size
             counts["net_volume_check"] = net_volume_check(

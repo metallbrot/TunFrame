@@ -127,7 +127,7 @@ Both tools run under a wrapper that writes their output to the log files above a
 
 ### Files to transfer
 
-`dnsexfiltrator.*.file` names a file in the client's `/data` directory, i.e. `docker/dnsexfiltrator-client/data/` on the host (CSV files there are not versioned; provide your own). An absolute host path is copied into that directory first.
+`dnsexfiltrator.*.file` names a file in the client's `/data` directory, i.e. `docker/dnsexfiltrator-client/data/` on the host (CSV files there are not versioned; provide your own). An absolute host path is copied into that directory first; a different file of the same name there is replaced.
 
 ### Parameters and defaults
 

@@ -73,7 +73,7 @@ Parameters of a configuration and their defaults (see [DNSExfiltrator](dnsexfilt
 
 | Parameter | Client option | Description | Default |
 | --- | --- | --- | --- |
-| `file` | file argument | File to exfiltrate, in the client's `/data` (`docker/dnsexfiltrator-client/data/`); an absolute host path is copied there | `/data/synthetic_cc_data_100.csv` |
+| `file` | file argument | File to exfiltrate, in the client's `/data` (`docker/dnsexfiltrator-client/data/`); an absolute host path is copied there (replacing a different file of the same name) | `/data/synthetic_cc_data_100.csv` |
 | `password` | password argument | RC4 key shared by client and server | `tunframe` |
 | `throttle` | `t=` | Fixed wait between queries, ms | `10` |
 | `throttle_random` | `tr=` | Additional random wait, `0` to n ms | `0` |
